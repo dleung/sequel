@@ -74,16 +74,9 @@ module Sequel
       # "SELECT * FROM products WHERE cost == 10" is valid
       # "SELECT * FROM products where (cost == 10)" is invalid
       def complex_expression_sql_append(sql, op, args)
-        puts sql.inspect
-        puts op.inspect
-        puts args.inspect
         case op
         when *IS_OPERATORS
-          begin
           raise InvalidOperation, "IS expressions not supported"
-          rescue => e
-            puts e.backtrace
-          end
         when *TWO_ARITY_OPERATORS
           if REGEXP_OPERATORS.include?(op) && !supports_regexp?
             raise InvalidOperation, "Pattern matching via regular expressions is not supported on #{db.database_type}"
