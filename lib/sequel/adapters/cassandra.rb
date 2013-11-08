@@ -39,6 +39,7 @@ module Sequel
           yield(r) if block_given?
           r
         end
+        
       end
 
       # Cassandra's default adapter does not support transactions
@@ -58,15 +59,27 @@ module Sequel
     class Dataset < Sequel::Dataset
       Database::DatasetClass = self
 
+      ARRAY_EMPTY = "[]".freeze
+      CURLY_OPEN = "{".freeze
+      CURLY_CLOSE = "}".freeze
+
       def fetch_rows(sql)
         execute(sql) do |results|
           results.each_row do |result|
             @columns ||= result.keys
 
-            yield result
+            yield result.symbolize_keys
           end
         end
         self
+      end
+
+      def symbolize_keys
+        hash = self.dup
+        hash.keys.each do |key|
+          hash[(key.to_sym rescue key) || key] = delete(key)
+        end
+        hash
       end
 
       # Overwrites the default behavior such that
@@ -100,6 +113,50 @@ module Sequel
           raise InvalidOperation, "ILIKE expressions not supported"
         else
           super
+        end
+      end
+
+      # For hashs (maps), it is in the format of
+      # VALUES("{'a':'1','b':'2'}")
+      def literal_hash_append(sql, v)
+        sql << CURLY_OPEN
+        hash_array_append(sql, v)
+        sql << CURLY_CLOSE
+      end
+
+      def hash_array_append(sql, hash)
+        c = false
+        co = COMMA
+        hash.each do |key, value|
+          sql << co if c
+          literal_append(sql, key)
+          sql << COLON
+          literal_append(sql, value)
+          c ||= true
+        end
+      end
+
+      # Cql requires the arrays to be in brackets, not parenthesis
+      def literal_other_append(sql, v)
+        case v
+        when CassSqlArray
+          array_cass_sql_append(sql, v)
+        else
+          super
+        end
+      end
+
+      # For arrays datatypes, Cassandra uses brackets:
+      # VALUES(['f@baggins.com','baggins@gmail.com','1'])
+      def array_cass_sql_append(sql, a)
+        # All values are treated as strings in an array
+        a = a.map(&:to_s)
+        if a.empty?
+          sql << ARRAY_EMPTY
+        else
+          sql << BRACKET_OPEN
+          expression_list_append(sql, a)
+          sql << BRACKET_CLOSE
         end
       end
 
