@@ -13,12 +13,39 @@ module Sequel
         opts = server_opts(server)
 
         client = Cql::Client.connect(opts)
-        client.use(opts[:default_keyspace])
+        client.use(opts[:default_keyspace] || :default)
         client
       end
 
       def disconnect_connection(c)
         c.close
+      end
+
+      # A keyspace must be created before an tables (column_families)
+      # Can populate it.
+      # DB.create_keyspace('test', {replication: {class: 'SimpleStrategy', replication_factor: 3}})
+      # CREATE KEYSPACE test WITH REPLICATION = { 'class':'SimpleStrategy','replication_factor':'3'} 
+      def create_keyspace(keyspace, opts = OPT)
+        if_not_exist = opts[:if_not_exists]
+        durable_writes = opts[:durable_writes]
+        binding.pry
+        raise Error, "Replication strategy must be defined!" unless opts.has_key?(:replication)
+        replication = opts[:replication]
+
+        raise Error, "Replication class must be defined!" unless replication.has_key?(:class)
+        replication_strategy = replication[:class]
+        replication_factor = replication[:replication_factor]
+
+        sql = "CREATE KEYSPACE "
+        sql << "IF NOT EXISTS " if if_not_exist
+        sql << keyspace.to_s
+        sql << " WITH REPLICATION = "
+        sql << "{ "
+        sql << replication.map {|k, v| "'#{k}':'#{v}'"}.join(",")
+        sql << "} "
+        sql << "AND DURABLE_WRITES = #{durable_writes}" if opts[:durable_writes]
+        
+        execute(sql)
       end
 
       def execute(sql, opts= {})
@@ -39,7 +66,6 @@ module Sequel
           yield(r) if block_given?
           r
         end
-        
       end
 
       # Cassandra's default adapter does not support transactions
@@ -54,14 +80,23 @@ module Sequel
       def rollback_transaction(conn, opts=OPTS)
         super if @opts[:provider]
       end
+
+      # Overwrites the generic integer with :int
+      def type_literal_generic_integer(column)
+        :int
+      end
+      
+      # Replaces the SELECT NULL AS "nil" from "table" LIMIT 1;
+      # query with SELECT COUNT(*) from "table" query,
+      # Since NULL isn't supported
+      def _table_exists?(ds)
+        ds.get{count(:*){}}
+      end
     end
 
     class Dataset < Sequel::Dataset
       Database::DatasetClass = self
-
-      ARRAY_EMPTY = "[]".freeze
-      CURLY_OPEN = "{".freeze
-      CURLY_CLOSE = "}".freeze
+      include Sequel::Cassandra::DatasetMethods
 
       def fetch_rows(sql)
         execute(sql) do |results|
@@ -80,99 +115,6 @@ module Sequel
           hash[(key.to_sym rescue key) || key] = delete(key)
         end
         hash
-      end
-
-      # Overwrites the default behavior such that
-      # The parenthesis are not added in the WHERE clauses.
-      # "SELECT * FROM products WHERE cost == 10" is valid
-      # "SELECT * FROM products where (cost == 10)" is invalid
-      def complex_expression_sql_append(sql, op, args)
-        case op
-        when *IS_OPERATORS
-          raise InvalidOperation, "IS expressions not supported"
-        when *TWO_ARITY_OPERATORS
-          if REGEXP_OPERATORS.include?(op) && !supports_regexp?
-            raise InvalidOperation, "Pattern matching via regular expressions is not supported on #{db.database_type}"
-          end
-          literal_append(sql, args.at(0))
-          sql << SPACE << op.to_s << SPACE
-          literal_append(sql, args.at(1))
-        when *N_ARITY_OPERATORS
-          c = false
-          op_str = " #{op} "
-          args.each do |a|
-            sql << op_str if c
-            literal_append(sql, a)
-            c ||= true
-          end
-        when :"NOT IN"
-          raise InvalidOperation, "NOT IN expressions not supported"
-        when :LIKE, :'NOT LIKE'
-          raise InvalidOperation, "LIKE expressions not supported"
-        when :ILIKE, :'NOT ILIKE'
-          raise InvalidOperation, "ILIKE expressions not supported"
-        else
-          super
-        end
-      end
-
-      # For hashs (maps), it is in the format of
-      # VALUES("{'a':'1','b':'2'}")
-      def literal_hash_append(sql, v)
-        sql << CURLY_OPEN
-        hash_array_append(sql, v)
-        sql << CURLY_CLOSE
-      end
-
-      def hash_array_append(sql, hash)
-        c = false
-        co = COMMA
-        hash.each do |key, value|
-          sql << co if c
-          literal_append(sql, key)
-          sql << COLON
-          literal_append(sql, value)
-          c ||= true
-        end
-      end
-
-      # Cql requires the arrays to be in brackets, not parenthesis
-      def literal_other_append(sql, v)
-        case v
-        when CassSqlArray
-          array_cass_sql_append(sql, v)
-        else
-          super
-        end
-      end
-
-      # For arrays datatypes, Cassandra uses brackets:
-      # VALUES(['f@baggins.com','baggins@gmail.com','1'])
-      def array_cass_sql_append(sql, a)
-        # All values are treated as strings in an array
-        a = a.map(&:to_s)
-        if a.empty?
-          sql << ARRAY_EMPTY
-        else
-          sql << BRACKET_OPEN
-          expression_list_append(sql, a)
-          sql << BRACKET_CLOSE
-        end
-      end
-
-      # Cassandra does not support regex
-      def supports_regex?
-        false
-      end
-
-      # Cassandra does not support IS TRUE
-      def supports_is_true?
-        false
-      end
-
-      # Cassandra does not support multiple columns
-      def supports_multiple_column_in?
-        false
       end
     end
   end
