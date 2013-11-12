@@ -153,7 +153,26 @@ module Sequel
       def supports_is_true?
         false
       end
-      
+
+      # Changes the filtering expression to not include parenthesis 
+      # during literal string conditions:
+      # Product.where("price = 10")
+      # => SELECT * from products where product = 10
+      def filter_expr(expr = nil, &block)
+        expr = nil if expr == []
+        if expr && block
+          return SQL::BooleanExpression.new(:AND, filter_expr(expr), filter_expr(block))
+        elsif block
+          expr = block
+        end
+        case expr
+        when String
+          LiteralString.new("#{expr}")
+        else
+          super
+        end
+      end
+
       private
 
       def select_clause_methods
