@@ -10,10 +10,25 @@ module Sequel
       set_adapter_scheme :cassandra
       
       def connect(server)
-        opts = server_opts(server)
+        cql_opts = {}
+        server_opts = server_opts(server)
 
-        client = Cql::Client.connect(opts)
-        client.use(opts[:default_keyspace] || :default)
+        cql_opts.merge!({
+          hosts: (server_opts[:hosts] || [server_opts[:host]]),
+          consistency: (server_opts[:default_consistency] || :one)
+        })
+
+        client = Cql::Client.connect(cql_opts)
+
+        # On connect, tries to connect to a default keyspace.
+        # That way, the keyspace can be utilized immediately, 
+        # Or created if not exists
+        begin
+          client.use(server_opts[:keyspace] || :default)
+        rescue Cql::QueryError => e
+          raise unless e.message.match(/Keyspace .* does not exist/)
+        end
+
         client
       end
 
@@ -23,12 +38,12 @@ module Sequel
 
       # A keyspace must be created before an tables (column_families)
       # Can populate it.
-      # DB.create_keyspace('test', {replication: {class: 'SimpleStrategy', replication_factor: 3}})
+      # DB.create_keyspace(:test, {replication: {class: 'SimpleStrategy', replication_factor: 3}})
       # CREATE KEYSPACE test WITH REPLICATION = { 'class':'SimpleStrategy','replication_factor':'3'} 
       def create_keyspace(keyspace, opts = OPT)
-        if_not_exist = opts[:if_not_exists]
+        if_not_exists = opts[:if_not_exists]
         durable_writes = opts[:durable_writes]
-        binding.pry
+
         raise Error, "Replication strategy must be defined!" unless opts.has_key?(:replication)
         replication = opts[:replication]
 
@@ -37,14 +52,29 @@ module Sequel
         replication_factor = replication[:replication_factor]
 
         sql = "CREATE KEYSPACE "
-        sql << "IF NOT EXISTS " if if_not_exist
+        sql << "IF NOT EXISTS " if if_not_exists
         sql << keyspace.to_s
         sql << " WITH REPLICATION = "
         sql << "{ "
         sql << replication.map {|k, v| "'#{k}':'#{v}'"}.join(",")
         sql << "} "
         sql << "AND DURABLE_WRITES = #{durable_writes}" if opts[:durable_writes]
+
+        execute(sql)
+      end
+
+      # Drops the keyspace and all column families inside it
+      # DB.drop_keyspace(:default)
+      # DROP KEYSPACE default
+      def drop_keyspace(keyspace, opts = {})
+        if_exists = opts[:if_exists]
+        sql = "DROP KEYSPACE "
         
+        # This option is currently not supported in cql-rb-1.1.1
+        # sql << "IF EXISTS " if if_exists 
+
+        sql << keyspace.to_s
+
         execute(sql)
       end
 
@@ -85,7 +115,20 @@ module Sequel
       def type_literal_generic_integer(column)
         :int
       end
-      
+
+      def supports_drop_table_if_exists?
+        true
+      end
+
+      def supports_named_column_constraints?
+        false
+      end
+
+      # CQL does not support autoincrement sql
+      def auto_increment_sql
+        ''
+      end
+
       # Replaces the SELECT NULL AS "nil" from "table" LIMIT 1;
       # query with SELECT COUNT(*) from "table" query,
       # Since NULL isn't supported
