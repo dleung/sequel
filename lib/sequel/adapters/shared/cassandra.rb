@@ -93,7 +93,6 @@ module Sequel
       end
 
       def insert_values_sql(sql)
-        binding.pry
         case values = opts[:values]
         when Array
           sql << VALUES
