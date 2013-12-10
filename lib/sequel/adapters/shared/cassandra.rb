@@ -17,6 +17,7 @@ module Sequel
       SET = Dataset::SET
       EQUAL = Dataset::EQUAL
       COMMA = Dataset::COMMA
+      VALUES = Dataset::VALUES
       BRACKET_OPEN = Dataset::BRACKET_OPEN
       BRACKET_CLOSE = Dataset::BRACKET_CLOSE
       COLON = Dataset::COLON
@@ -25,6 +26,8 @@ module Sequel
       TWO_ARITY_OPERATORS = Dataset::TWO_ARITY_OPERATORS
       N_ARITY_OPERATORS = Dataset::N_ARITY_OPERATORS
       REGEXP_OPERATORS = Dataset::REGEXP_OPERATORS
+      PAREN_CLOSE = Dataset::PAREN_CLOSE
+      PAREN_OPEN = Dataset::PAREN_OPEN
 
       # Overwrites the default behavior such that
       # The parenthesis are not added in the WHERE clauses.
@@ -86,6 +89,35 @@ module Sequel
           end
         else
           sql << values
+        end
+      end
+
+      def insert_values_sql(sql)
+        binding.pry
+        case values = opts[:values]
+        when Array
+          sql << VALUES
+          sql << PAREN_OPEN
+          c = false
+          values.each do |v|
+            sql << COMMA if c
+            if v.is_a?(Array)
+              cass_array_sql_append(sql, v)
+            elsif v.is_a?(Hash)
+              cass_hash_sql_append(sql, v)
+            else
+              literal_append(sql, v)
+            end
+            c ||= true
+          end
+          sql << PAREN_CLOSE
+        when Dataset
+          sql << SPACE
+          subselect_sql_append(sql, values)
+        when LiteralString
+          sql << SPACE << values
+        else
+          raise Error, "Unsupported INSERT values type, should be an Array or Dataset: #{values.inspect}"
         end
       end
 
