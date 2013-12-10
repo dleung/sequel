@@ -20,15 +20,6 @@ module Sequel
 
         client = Cql::Client.connect(cql_opts)
 
-        # On connect, tries to connect to a default keyspace.
-        # That way, the keyspace can be utilized immediately, 
-        # Or created if not exists
-        begin
-          client.use(server_opts[:keyspace] || :default)
-        rescue Cql::QueryError => e
-          raise unless e.message.match(/Keyspace .* does not exist/)
-        end
-
         client
       end
 
@@ -79,7 +70,7 @@ module Sequel
       end
 
       def execute(sql, opts= {})
-        consistency = {consistency: opts[:read_consistency] || server_opts(opts)[:default_read_consistency]}
+        consistency = {consistency: opts[:read_consistency] || server_opts(opts)[:read_consistency]}
 
         synchronize do |conn|
           r = log_yield(sql){conn.execute(sql, consistency)}
@@ -89,7 +80,7 @@ module Sequel
       end
 
       def execute_dui(sql, opts = {})
-        consistency = {consistency: opts[:write_consistency] || server_opts(opts)[:default_write_consistency] || :any}
+        consistency = {consistency: opts[:write_consistency] || server_opts(opts)[:write_consistency] || :any}
 
         synchronize do |conn|
           r = log_yield(sql){conn.execute(sql, consistency)}
@@ -121,6 +112,11 @@ module Sequel
       end
 
       def supports_named_column_constraints?
+        false
+      end
+
+      # Don't wrap tables and columns in quotes
+      def quote_identifiers?
         false
       end
 
