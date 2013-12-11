@@ -124,9 +124,7 @@ module Sequel
       # VALUES(['f@baggins.com','baggins@gmail.com','1'])
       def cass_array_sql_append(sql, a)
         # All values are treated as strings in an array
-        a.each do |v|
-          raise Error, "Array values must be a string: #{v}" unless v.is_a?(String)
-        end
+        v = v.to_s
         if a.empty?
           sql << ARRAY_EMPTY
         else
@@ -141,8 +139,8 @@ module Sequel
         c = false
         co = COMMA
         h.each do |key, value|
-          raise Error, "hash key must be a string" unless key.is_a?(String)
-          raise Error, "hash value must be a string" unless value.is_a?(String)
+          key = key.to_s
+          value = value.to_s
           sql << co if c
           literal_append(sql, key)
           sql << COLON
