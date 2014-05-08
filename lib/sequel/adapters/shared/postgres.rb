@@ -1254,14 +1254,19 @@ module Sequel
         else
           # Force the use of RETURNING with the primary key value,
           # unless it has been disabled.
-          returning(insert_pk).insert(*values){|r| return r.values.first}
+          if supports_returning?(:insert)
+            returning(insert_pk).insert(*values){|r| return r.values.first}
+          else
+            super
+            nil
+          end
         end
       end
 
       # Insert a record returning the record inserted.  Always returns nil without
       # inserting a query if disable_insert_returning is used.
       def insert_select(*values)
-        returning.insert(*values){|r| return r} unless @opts[:disable_insert_returning]
+        returning.insert(*values){|r| return r} unless !supports_returning?(:insert_select) || @opts[:disable_insert_returning]
       end
 
       # Locks all tables in the dataset's FROM clause (but not in JOINs) with
@@ -1321,7 +1326,7 @@ module Sequel
 
       # Returning is always supported.
       def supports_returning?(type)
-        true
+        server_version > 80002
       end
 
       # PostgreSQL supports pattern matching via regular expressions
