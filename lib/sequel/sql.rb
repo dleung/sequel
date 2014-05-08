@@ -48,6 +48,17 @@ module Sequel
       t = now
       local(t.year, t.month, t.day, hour, minute, second, usec)
     end
+
+    # Return a string in HH:MM:SS format representing the time.
+    def to_s(*args)
+      if args.empty?
+        strftime('%H:%M:%S')
+      else
+        # Superclass may have defined a method that takes a format string,
+        # and we shouldn't override in that case.
+        super
+      end
+    end
   end
 
   # The SQL module holds classes whose instances represent SQL fragments.
@@ -205,7 +216,7 @@ module Sequel
         case op
         when *N_ARITY_OPERATORS
           raise(Error, "The #{op} operator requires at least 1 argument") unless args.length >= 1
-          old_args = args
+          old_args = args.map{|a| a.is_a?(self.class) && a.op == :NOOP ? a.args.first : a}
           args = []
           old_args.each{|a| a.is_a?(self.class) && a.op == op ? args.concat(a.args) : args.push(a)}
         when *TWO_ARITY_OPERATORS
@@ -787,20 +798,23 @@ module Sequel
     # arguments with the appropriate operator, and the & and | operators return
     # boolean expressions combining all of the arguments with either AND or OR.
     module OperatorBuilders
-      %w'+ - * /'.each do |op|
-        class_eval(<<-END, __FILE__, __LINE__ + 1)
-          def #{op}(*args)
-            SQL::NumericExpression.new(:#{op}, *args)
-          end
-        END
-      end
-
-      {'&'=>'AND', '|'=>'OR'}.each do |m, op|
-        class_eval(<<-END, __FILE__, __LINE__ + 1)
-          def #{m}(*args)
-            SQL::BooleanExpression.new(:#{op}, *args)
-          end
-        END
+      {'::Sequel::SQL::NumericExpression'=>{'+'=>'+', '-'=>'-', '*'=>'*', '/'=>'/'},
+       '::Sequel::SQL::BooleanExpression'=>{'&'=>'AND', '|'=>'OR'}}.each do |klass, ops|
+        ops.each do |m, op|
+          class_eval(<<-END, __FILE__, __LINE__ + 1)
+            def #{m}(*args)
+              if (args.length == 1)
+                if (v = args.first).class.is_a?(#{klass})
+                  v
+                else
+                  #{klass}.new(:NOOP, v)
+                end
+              else
+                #{klass}.new(:#{op}, *args)
+              end
+            end
+          END
+        end
       end
       
       # Invert the given expression.  Returns a <tt>Sequel::SQL::BooleanExpression</tt>
@@ -924,6 +938,7 @@ module Sequel
       # The alias to use for the expression, not +alias+ since that is
       # a keyword in ruby.
       attr_reader :aliaz
+      alias_method :alias, :aliaz
 
       # Create an object with the given expression and alias.
       def initialize(expression, aliaz)
@@ -1000,6 +1015,8 @@ module Sequel
           StringExpression.like(l, r)
         when DelayedEvaluation
           Sequel.delay{from_value_pair(l, r.callable.call)}
+        when Dataset::PlaceholderLiteralizer::Argument
+          r.transform{|v| from_value_pair(l, v)}
         else
           new(:'=', l, r)
         end
@@ -1200,6 +1217,10 @@ module Sequel
 
     # Represents an SQL function call.
     class Function < GenericExpression
+      WILDCARD = LiteralString.new('*').freeze
+      DISTINCT = ["DISTINCT ".freeze].freeze
+      COMMA_ARRAY = [LiteralString.new(', ').freeze].freeze
+
       # The SQL function to call
       attr_reader :f
       
@@ -1209,6 +1230,28 @@ module Sequel
       # Set the functions and args to the given arguments
       def initialize(f, *args)
         @f, @args = f, args
+      end
+
+      # If no arguments are given, return a new function with the wildcard prepended to the arguments.
+      #
+      #   Sequel.function(:count).*  # count(*)
+      #   Sequel.function(:count, 1).*  # count(*, 1)
+      def *(ce=(arg=false;nil))
+        if arg == false
+          Function.new(f, WILDCARD, *args)
+        else
+          super(ce)
+        end
+      end
+
+      # Return a new function with DISTINCT before the method arguments.
+      def distinct
+        Function.new(f, PlaceholderLiteralString.new(DISTINCT + COMMA_ARRAY * (args.length-1), args))
+      end
+
+      # Create a WindowFunction using the receiver and the appropriate options for the window.
+      def over(opts=OPTS)
+        WindowFunction.new(self, Window.new(opts))
       end
 
       to_s_method :function_sql
@@ -1244,6 +1287,12 @@ module Sequel
       # Set the value to the given argument
       def initialize(value)
         @value = value
+      end
+
+      # Create a Function using this identifier as the functions name, with
+      # the given args.
+      def function(*args)
+        Function.new(self, *args)
       end
       
       to_s_method :quote_identifier, '@value'
@@ -1397,6 +1446,12 @@ module Sequel
       # Set the table and column to the given arguments
       def initialize(table, column)
         @table, @column = table, column
+      end
+      
+      # Create a Function using this identifier as the functions name, with
+      # the given args.
+      def function(*args)
+        Function.new(self, *args)
       end
       
       to_s_method :qualified_identifier_sql, "@table, @column"
@@ -1584,12 +1639,8 @@ module Sequel
     #
     # For a more detailed explanation, see the {Virtual Rows guide}[rdoc-ref:doc/virtual_rows.rdoc].
     class VirtualRow < BasicObject
-      WILDCARD = LiteralString.new('*').freeze
       QUESTION_MARK = LiteralString.new('?').freeze
-      COMMA_SEPARATOR = LiteralString.new(', ').freeze
       DOUBLE_UNDERSCORE = '__'.freeze
-      DISTINCT = ["DISTINCT ".freeze].freeze
-      COMMA_ARRAY = [COMMA_SEPARATOR].freeze
 
       include OperatorBuilders
 
@@ -1616,13 +1667,14 @@ module Sequel
           else
             case args.shift
             when :*
-              Function.new(m, WILDCARD)
+              Function.new(m, *args).*
             when :distinct
-              Function.new(m, PlaceholderLiteralString.new(DISTINCT + COMMA_ARRAY * (args.length-1), args))
+              Function.new(m, *args).distinct
             when :over
-              opts = args.shift || {}
-              fun_args = ::Kernel.Array(opts[:*] ? WILDCARD : opts[:args])
-              WindowFunction.new(Function.new(m, *fun_args), Window.new(opts))
+              opts = args.shift || OPTS
+              f = Function.new(m, *::Kernel.Array(opts[:args]))
+              f = f.* if opts[:*]
+              f.over(opts)
             else
               Kernel.raise(Error, 'unsupported VirtualRow method argument used with block')
             end

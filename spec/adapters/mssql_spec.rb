@@ -16,12 +16,12 @@ describe "A MSSQL database" do
     @db = DB
   end
 
-  cspecify "should be able to read fractional part of timestamp", :odbc do
+  specify "should be able to read fractional part of timestamp" do
     rs = @db["select getutcdate() as full_date, cast(datepart(millisecond, getutcdate()) as int) as milliseconds"].first
     rs[:milliseconds].should == rs[:full_date].usec/1000
   end
 
-  cspecify "should be able to write fractional part of timestamp", :odbc do
+  specify "should be able to write fractional part of timestamp" do
     t = Time.utc(2001, 12, 31, 23, 59, 59, 997000)
     (t.usec/1000).should == @db["select cast(datepart(millisecond, ?) as int) as milliseconds", t].get
   end
@@ -607,8 +607,8 @@ describe "Database#foreign_key_list" do
       end
     end
     after(:all) do
-      DB.drop_table :vendor__mapping
-      DB.drop_table :vendor__vendors
+      DB.drop_table? :vendor__mapping
+      DB.drop_table? :vendor__vendors
       DB.execute_ddl "drop schema vendor"
     end
     it "should support mixed schema bound tables" do
@@ -616,3 +616,107 @@ describe "Database#foreign_key_list" do
     end
   end
 end
+
+describe "MSSQL optimistic locking plugin" do
+  before do
+    @db = DB
+    @db.create_table! :items do
+      primary_key :id
+      String :name, :size => 20
+      column :timestamp, 'timestamp'
+    end
+   end
+  after do
+    @db.drop_table?(:items)
+  end
+
+  it "should not allow stale updates" do
+    c = Class.new(Sequel::Model(:items))
+    c.plugin :mssql_optimistic_locking
+    o = c.create(:name=>'test')
+    o2 = c.first
+    ts = o.timestamp
+    ts.should_not be_nil
+    o.name = 'test2'
+    o.save
+    o.timestamp.should_not == ts
+    proc{o2.save}.should raise_error(Sequel::NoExistingObject)
+  end
+end unless DB.adapter_scheme == :odbc
+
+describe "MSSQL Stored Procedure support" do
+  before do
+    @db = DB
+    @now = DateTime.now.to_s
+    @db.execute('CREATE PROCEDURE dbo.SequelTest
+      (@Input varchar(25), @IntegerInput int, @Output varchar(25) OUTPUT, @IntegerOutput int OUTPUT) AS
+      BEGIN SET @Output = @Input SET @IntegerOutput = @IntegerInput RETURN @IntegerInput END')
+  end
+  after do
+    @db.execute('DROP PROCEDURE dbo.SequelTest')
+  end
+
+  describe "with unnamed parameters" do
+    it "should return a hash of output variables" do
+      r = @db.call_mssql_sproc(:SequelTest, {:args => [@now, 1, :output, :output]})
+      r.should be_a_kind_of(Hash)
+      r.values_at(:var2, :var3).should == [@now, '1']
+    end
+
+    it "should support typed output variables" do
+      @db.call_mssql_sproc(:SequelTest, {:args => [@now, 1, :output, [:output, 'int']]})[:var3].should == 1
+    end
+
+    it "should support named output variables" do
+      @db.call_mssql_sproc(:SequelTest, {:args => [@now, 1, [:output, nil, 'output'], :output]})[:output].should == @now
+    end
+
+    it "should return the number of Affected Rows" do
+      @db.call_mssql_sproc(:SequelTest, {:args => [@now, 1, :output, :output]})[:numrows].should == 1
+    end
+
+    it "should return the Result Code" do
+      @db.call_mssql_sproc(:SequelTest, {:args => [@now, 1, :output, :output]})[:result].should == 1
+    end
+  end
+
+  describe "with named parameters" do
+    it "should return a hash of output variables" do
+      r = @db.call_mssql_sproc(:SequelTest, :args => {
+        'Input' => @now,
+        'IntegerInput' => 1,
+        'Output' => [:output, nil, 'output'],
+        'IntegerOutput' => [:output, nil, 'integer_output']
+      })
+      r.should be_a_kind_of(Hash)
+      r.values_at(:output, :integer_output).should == [@now, '1']
+    end
+
+    it "should support typed output variables" do
+      @db.call_mssql_sproc(:SequelTest, :args => {
+        'Input' => @now,
+        'IntegerInput' => 1,
+        'Output' => [:output, nil, 'output'],
+        'IntegerOutput' => [:output, 'int', 'integer_output']
+      })[:integer_output].should == 1
+    end
+
+    it "should return the number of Affected Rows" do
+      @db.call_mssql_sproc(:SequelTest, :args => {
+        'Input' => @now,
+        'IntegerInput' => 1,
+        'Output' => [:output, nil, 'output'],
+        'IntegerOutput' => [:output, nil, 'integer_output']
+      })[:numrows].should == 1
+    end
+
+    it "should return the Result Code" do
+      @db.call_mssql_sproc(:SequelTest, :args => {
+        'Input' => @now,
+        'IntegerInput' => 1,
+        'Output' => [:output, nil, 'output'],
+        'IntegerOutput' => [:output, nil, 'integer_output']
+      })[:result].should == 1
+    end
+  end
+end unless DB.adapter_scheme == :odbc

@@ -41,14 +41,23 @@ As is the code to add a related album to an artist:
 
   @artist.add_album(:name=>'RF')
 
+It also makes it easier to creating queries that use joins based on the association:
+
+  Artist.association_join(:albums)
+  # SELECT * FROM artists
+  # INNER JOIN albums ON (albums.artist_id = artists.id)
+
 == The Types of Associations
 
-Sequel has four different association types built in:
+Sequel has five different association types built in:
 
 * many_to_one
 * one_to_many
 * one_to_one
 * many_to_many
+* one_through_one
+
+It ships with additional association types via plugins.
 
 === many_to_one
 
@@ -68,12 +77,18 @@ table for each row in the associated table.
     many_to_one :artist
   end
 
-=== one_to_many
+=== one_to_many and one_to_one
 
 The one_to_many association is used when the table for the associated class
 contains a foreign key that references the primary key in the table for the
 current class.  It is named because for each row in the current table there
 can be many rows in the associated table:
+
+The one_to_one association can be thought of as a subset of the one_to_many association,
+but where there can only be either 0 or 1 records in the associated table.  This is
+useful if there is a unique constraint on the foreign key field in the associated table.
+It's also useful if you want to impose an order on the association and just want the
+first record returned.
 
   # Database schema:
   #  artists            albums
@@ -84,33 +99,26 @@ can be many rows in the associated table:
   class Artist
     # Uses plural form of associated model name
     one_to_many :albums
-  end
 
-=== one_to_one
-
-The one_to_one association can be thought of as a subset of the one_to_many association,
-but where there can only be either 0 or 1 records in the associated table.
-It is the least frequently used of the four associations.  If you assume
-each artist cannot be associated with more than one album:
-
-  # Database schema:
-  #  artists            albums
-  #   :id   <----\       :id
-  #   :name       \----- :artist_id 
-  #                      :name
-
-  class Artist
     # Uses singular form of associated model name
     one_to_one :album
   end
-  
-=== many_to_many
+
+=== many_to_many and one_through_one
 
 The many_to_many association allows each row in the current table to be associated
 to many rows in the associated table, and each row in the associated table to
 many rows in the current table, by using a join table to associate the two tables.
 If you assume each artist can have multiple albums and each album can have multiple
 artists:
+
+The one_through_one association can be thought of as a subset of the many_to_many
+association, but where there can only be 0 or 1 records in the associated table.
+This is useful if there is a unique constraint on the foreign key in the join table
+that refrences the current table.  It's also useful if you want to impose an order
+on the association and just want the first record returned.  The one_through_one
+association is so named because it sets up a one-to-one association through a
+single join table.
 
   # Database schema:
   #  albums 
@@ -124,14 +132,15 @@ artists:
   class Artist
     # Uses plural form of associated model name
     many_to_many :albums
-  end
-  class Album
-    many_to_many :artists
+
+    # Uses singular form of associated model name
+    one_through_one :album
   end
 
 === Differences Between many_to_one and one_to_one
 
-If you want to setup a 1-1 relationship between two models, you have to use
+If you want to setup a 1-1 relationship between two models, where the
+foreign key in one table references the associated table directly, you have to use
 many_to_one in one model, and one_to_one in the other model.  How do you
 know which to use in which model?
 
@@ -293,6 +302,8 @@ Examples:
   @artist.remove_album(@album)
   @artist.remove_all_albums
 
+one_through_one associations do not have any modification methods added.
+
 == Caching
 
 Associations are cached after being retrieved:
@@ -334,7 +345,7 @@ ending in +_dataset+ that returns a dataset representing the objects in the asso
   @album.artist_id
   # 10
   @album.artist_dataset
-  # SELECT * FROM artists WHERE (id = 10)
+  # SELECT * FROM artists WHERE (id = 10) LIMIT 1
   
   @artist.id
   # 20
@@ -400,7 +411,7 @@ can combine the approaches:
   @artist.albums_dataset.where(:publisher=>@publisher)
 
 This doesn't just work for +many_to_one+ associations, it also works for
-+one_to_one+, +one_to_many+, and +many_to_many+ associations:
+the other associations:
 
   Album.one_to_one :album_info
   # The album related to that AlbumInfo instance
@@ -413,6 +424,10 @@ This doesn't just work for +many_to_one+ associations, it also works for
   Album.many_to_many :tags
   # All albums related to that Tag instance
   Album.where(:tags=>Tag[4])
+
+  Album.one_through_one :tag
+  # All albums related to that Tag instance
+  Album.where(:tag=>Tag[4])
 
 Note that for +one_to_many+ and +many_to_many+ associations, you still
 use the plural form even though only a single model object is given.
@@ -474,10 +489,7 @@ This will return all albums that whose popular tags would include
 at least one of those tags.
 
 Note that filtering by associations does not work for associations
-that use blocks with instance-specific code, or associations that
-have a limit or offset. This includes many_to_one/one_to_one
-associations that would return multiple values if they were not
-limited to a single value.
+that use blocks with instance-specific code.
 
 == Name Collisions
 
@@ -688,6 +700,14 @@ and a new associated object will be created from them:
 The add_<i>association</i> method returns the now associated object:
 
   @album = @artist.add_album(:name=>'RF')
+
+Note that the add_* methods for +one_to_many+ persist the changes by
+saving the passed in (or newly created) object.  However, to avoid
+silent failures of these methods, they explicitly raise exceptions
+even when raise_on_save_failure is false for the associated model.
+You can disable this behavior (i.e. return nil instead of raising
+exceptions on a save failure) by setting the <tt>:raise_on_save_failure=>false</tt>
+option for the association.
 
 === remove_<i>association</i>(object_to_disassociate) (e.g. remove_album) [+one_to_many+ and +many_to_many+]
 
@@ -958,7 +978,7 @@ Use an array with two arguments for the value to specify a limit and an offset.
 This probably doesn't make a lot of sense for *_to_one associations, though you
 could use it to specify an offset.
 
-==== :join_table [+many_to_many+]
+==== :join_table [+many_to_many+, +one_through_one+]
 
 Name of table that includes the foreign keys to both the current model and the
 associated model, as a symbol.  Defaults to the name of current model and name
@@ -969,7 +989,7 @@ Here's an example of the defaults:
   Album.many_to_many :artists # :join_table=>:albums_artists
   Person.many_to_many :colleges # :join_table=>:colleges_people
 
-==== :left_key [+many_to_many+]
+==== :left_key [+many_to_many+, +one_through_one+]
 
 Foreign key in join table that points to current model's primary key, as a
 symbol.  Defaults to :"#{model_name.underscore}_id".
@@ -978,10 +998,11 @@ symbol.  Defaults to :"#{model_name.underscore}_id".
 
 Can use an array of symbols for a composite key association.
 
-==== :right_key [+many_to_many+]
+==== :right_key [+many_to_many+, +one_through_one+]
 
 Foreign key in join table that points to associated model's primary key, as a
-symbol.  Defaults to :"#{association_name.singularize}_id".
+symbol.  Defaults to :"#{association_name.singularize}_id" for +many_to_many+
+and :"#{association_name}_id" for +one_through_one+.
 
   Album.many_to_many :tags # :right_key=>:tag_id
   
@@ -1057,7 +1078,7 @@ A module or array of modules to extend the dataset with.  These are used to
 set up association extensions.  For more information , please see the
 {Advanced Associations page}[rdoc-ref:doc/advanced_associations.rdoc].
 
-==== :primary_key
+==== :primary_key [+many_to_one+, +one_to_one+, +one_to_many+]
 
 The column that the :key option references, as a symbol. For +many_to_one+
 associations, this column is in the associated table. For +one_to_one+ and
@@ -1069,7 +1090,7 @@ array of symbols for a composite key association.
   Artist.one_to_many :albums # :primary_key=>:arid
   Album.one_to_many :artist # :primary_key=>:arid
 
-==== :left_primary_key [+many_to_many+]
+==== :left_primary_key [+many_to_many+, +one_through_one+]
 
 Column in current table that :left_key option points to, as a symbol.
 Defaults to primary key of current table.
@@ -1079,7 +1100,7 @@ Defaults to primary key of current table.
 
 Can use an array of symbols for a composite key association.
 
-==== :right_primary_key [+many_to_many+]
+==== :right_primary_key [+many_to_many+, +one_through_one+]
 
 Column in associated table that :right_key points to, as a symbol.
 Defaults to primary key of the associated table.
@@ -1089,7 +1110,7 @@ Defaults to primary key of the associated table.
 
 Can use an array of symbols for a composite key association.
 
-==== :join_table_block [+many_to_many+]
+==== :join_table_block [+many_to_many+, +one_through_one+]
 
 A proc that can be used to modify the dataset used in the add/remove/remove_all
 methods.  It's separate from the association block, as that is called on a
@@ -1381,12 +1402,14 @@ needed, as one of the other eager_graph related association options is usually s
 If specified, should be a proc that accepts a single hash argument, which will contain
 at least the following keys:
 
-:self :: The dataset that is doing the eager loading
-:table_alias :: An alias to use for the table to graph for this association.
-:implicit_qualifier :: The alias that was used for the current table (since you can cascade associations).
 :callback :: A callback proc used to dynamically modify the dataset to graph into the
              current dataset, before such graphing is done. This is nil if no callback
              proc is used.
+:implicit_qualifier :: The alias that was used for the current table (since you can cascade associations).
+:join_type :: Override the join type to use when graphing.
+:limit_strategy :: The limit strategy symbol to use when graphing (for limited associations only)
+:self :: The dataset that is doing the eager loading
+:table_alias :: An alias to use for the table to graph for this association.
 
 Example:
 
@@ -1405,7 +1428,15 @@ Sequel has to do some guess work when attempting to add the association's
 order to an eager_graphed dataset.  In most cases it does so correctly, but
 if it has problems, you'll probably want to set this option to false.
 
-==== :graph_join_table_conditions [+many_to_many+]
+==== :graph_order
+
+Override the order added when using eager_graph, instead of using the one
+defined in :order.  This is useful if :order contains qualified identifiers,
+as the qualifiers may not match the aliases automatically used by eager_graph.
+This should contain unqualified identifiers, and eager_graph will automatically
+qualify them with the appropriate alias.
+
+==== :graph_join_table_conditions [+many_to_many+, +one_through_one+]
 
 The additional conditions to use on the SQL join for the join table when
 eagerly loading the association via eager_graph. Should be a hash or an array
@@ -1420,7 +1451,7 @@ has received a specific degree:
     :join_table=>:degrees_received, 
     :graph_join_table_conditions=>{:degree=>'BS'}
 
-==== :graph_join_table_block [+many_to_many+]
+==== :graph_join_table_block [+many_to_many+, +one_through_one+]
 
 The block to pass to join_table for the join table when eagerly loading the
 association via eager_graph.  This is used for similar reasons as :graph_block,
@@ -1442,7 +1473,7 @@ has received a bachelor's degree (degree starting with B):
 This should be done when graphing the join table, instead of when graphing the
 final table, as :degree is a column of the join table.
 
-==== :graph_join_table_join_type [+many_to_many+]
+==== :graph_join_table_join_type [+many_to_many+, +one_through_one+]
 
 The type of SQL join to use for the join table when eagerly loading the
 association via eager_graph.  Defaults to the :graph_join_type option or
@@ -1450,7 +1481,7 @@ association via eager_graph.  Defaults to the :graph_join_type option or
 you want to use a different join type when JOINing to the join table then
 you want to use for JOINing to the final table
 
-==== :graph_join_table_only_conditions [+many_to_many+]
+==== :graph_join_table_only_conditions [+many_to_many+, +one_through_one+]
 
 The conditions to use on the SQL join for the join table when eagerly loading
 the association via eager_graph, instead of the default conditions specified
@@ -1517,12 +1548,12 @@ Like the :primary_key option, but :primary_key references the method name, while
 Like the :key option, but :key references the column
 name, while :key_method references the method name.
 
-==== :left_primary_key_column [+many_to_many+]
+==== :left_primary_key_column [+many_to_many+, +one_through_one+]
 
 Like the :left_primary_key option, but :left_primary_key references the method name, while
 :left_primary_key_column references the underlying column.
 
-==== :right_primary_key_method [+many_to_many+]
+==== :right_primary_key_method [+many_to_many+, +one_through_one+]
 
 Like the :right_primary_key option, but :right_primary_key references the column
 name, while :right_primary_key_method references the method name.
@@ -1645,6 +1676,16 @@ add_<i>association</i> method, Sequel will automatically save the object.
 If you don't want to validate objects when these implicit saves are done,
 the validate option should be set to false.
 
+==== :raise_on_save_failure [+one_to_many+ associations]
+
+Set to false to not raise an exception when validation or a before hook
+fails when implicitly saving an associated object in the add_* or remove_*
+methods.  This mirrors the raise_on_save_failure model setting, which these
+methods do not respect (by design, since the setting is dangerous).
+
+If you use this option, you must explicitly check all add_* and remove_* return
+values to see if they were successful.
+
 ==== :allow_eager
 
 If set to false, you cannot load the association eagerly via eager or
@@ -1660,7 +1701,7 @@ instances.
 ==== :cartesian_product_number 
 
 The number of joins completed by this association that could cause more
-than one row for each row in the current table (default: 0 for *_to_one
+than one row for each row in the current table (default: 0 for *_one
 associations, 1 for *_to_many associations).
 
 This should only be modified in specific cases.  For example, if you have
@@ -1685,41 +1726,38 @@ plugin.
 
 ==== :eager_limit_strategy
 
-This setting determines what strategy to use for loading the associations
+This setting determines what strategy to use for eager loading the associations
 that use the :limit setting to limit the number of returned records. You
 can't use LIMIT directly, since you want a limit for each group of
 associated records, not a LIMIT on the total number of records returned
 by the dataset.
 
-By default, if a *_to_many association uses a limit or offset, or a
-one_to_one association uses an offset, Sequel will choose to use an
-eager limit strategy.  The default strategy depends on the database
-being used.  For databases which support window functions, a window
-function will be used.  Other databases will just have an ruby array
-slice done on the entire record set.
-
-For one_to_one associations without offsets, no strategy is used by default
-because none is needed for a true one_to_one association (since there
-is only one associated record per current record).  However, if you are
-using a one_to_one association where the relationship is really one_to_many,
-and using an order to pick the first matching row, then if you don't
-specify an :eager_limit_strategy option, you'll be loading all related
-rows just to have Sequel ignore all rows after the first.  By using a
-strategy to change the query to only return one associated record per
-current record, you can get much better database performance.
-
 In general, Sequel picks an appropriate strategy, so it is not usually
-necessary to specify a specific strategy.  The exception is for one_to_one
-associations where there is more than one associated record per current
-record.  For those, you should probably specify true to this option to have
-Sequel pick an appropriate strategy.
+necessary to specify a strategy.  You can specify true for this option to
+have Sequel choose which strategy to use (this is the default).  You can
+specify a symbol to manually choose a strategy.  The available strategies are:
 
-You can also specify a symbol to manually choose a strategy.  The available
-strategies are:
-
+:union :: Uses one or more UNION queries with a subquery for each record
+          you are eagerly loading for (this is the default strategy).
 :distinct_on :: Uses DISTINCT ON to ensure only the first matching record
-                is loaded (only used for one_to_one associations without
+                is loaded (only used for one_*_one associations without
                 offsets on PostgreSQL).
 :window_function :: Uses a ROW_NUMBER window functions to ensure the
                     correctly limited/offset records are returned.
 :ruby :: Uses ruby array slicing to emulate database limiting/offsetting.
+
+==== :subqueries_per_union
+
+The number of subqueries per union query to use when eager loading for a
+limited association using a union strategy.  This defaults to 40, but the
+optimum number depends on the database in use and the latency between the
+database and the application.
+
+==== :filter_limit_strategy
+
+The strategy to use when filtering by limited associations.  In general
+Sequel will choose either a :distinct_on, :window_function, or
+:correlated_subquery strategy based on the association type and what
+the database supports, but you can override that if necessary using
+this option.
+

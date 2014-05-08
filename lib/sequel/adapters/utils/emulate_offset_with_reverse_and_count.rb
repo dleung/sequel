@@ -18,6 +18,7 @@ module Sequel
     # reversed in the subselect.  Note that the order needs to be unambiguous
     # to work correctly, and you must select all columns that you are ordering on.
     def select_sql
+      return super if @opts[:sql]
       return super unless o = @opts[:offset]
 
       order = @opts[:order] || default_offset_order
@@ -26,7 +27,7 @@ module Sequel
       end
 
       ds = unlimited
-      row_count = @opts[:offset_total_count] || ds.clone(:append_sql=>'').count
+      row_count = @opts[:offset_total_count] || ds.clone(:append_sql=>'', :placeholder_literal_null=>true).count
       dsa1 = dataset_alias(1)
 
       if o.is_a?(Symbol) && @opts[:bind_vars] && (match = Sequel::Dataset::PreparedStatementMethods::PLACEHOLDER_RE.match(o.to_s))
@@ -55,6 +56,12 @@ module Sequel
       sql = @opts[:append_sql] || ''
       subselect_sql_append(sql, ds)
       sql
+    end
+
+    # This does not support offsets in correlated subqueries, as it requires a query to get
+    # a count that will be invalid if a correlated subquery is used.
+    def supports_offsets_in_correlated_subqueries?
+      false
     end
 
     private

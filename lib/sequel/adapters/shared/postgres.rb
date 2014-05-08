@@ -94,6 +94,9 @@ module Sequel
       FOREIGN_KEY_LIST_ON_DELETE_MAP = {'a'.freeze=>:no_action, 'r'.freeze=>:restrict, 'c'.freeze=>:cascade, 'n'.freeze=>:set_null, 'd'.freeze=>:set_default}.freeze
       POSTGRES_DEFAULT_RE = /\A(?:B?('.*')::[^']+|\((-?\d+(?:\.\d+)?)\))\z/
       UNLOGGED = 'UNLOGGED '.freeze
+      ON_COMMIT = {
+        :drop => 'DROP', :delete_rows => 'DELETE ROWS', :preserve_rows => 'PRESERVE ROWS',
+      }.freeze
 
       # SQL fragment for custom sequences (ones not created by serial primary key),
       # Returning the schema and literal form of the sequence name, by parsing
@@ -153,8 +156,8 @@ module Sequel
 
       # Commit an existing prepared transaction with the given transaction
       # identifier string.
-      def commit_prepared_transaction(transaction_id)
-        run("COMMIT PREPARED #{literal(transaction_id)}")
+      def commit_prepared_transaction(transaction_id, opts=OPTS)
+        run("COMMIT PREPARED #{literal(transaction_id)}", opts)
       end
 
       # Creates the function in the database.  Arguments:
@@ -407,6 +410,8 @@ module Sequel
       # any named types.
       def reset_conversion_procs
         @conversion_procs = get_conversion_procs
+        conversion_procs_updated
+        @conversion_procs
       end
 
       # Reset the primary key sequence for the given table, basing it on the
@@ -423,8 +428,8 @@ module Sequel
 
       # Rollback an existing prepared transaction with the given transaction
       # identifier string.
-      def rollback_prepared_transaction(transaction_id)
-        run("ROLLBACK PREPARED #{literal(transaction_id)}")
+      def rollback_prepared_transaction(transaction_id, opts=OPTS)
+        run("ROLLBACK PREPARED #{literal(transaction_id)}", opts)
       end
 
       # PostgreSQL uses SERIAL psuedo-type instead of AUTOINCREMENT for
@@ -537,6 +542,7 @@ module Sequel
           convert_named_procs_to_procs(named_procs).each do |oid, pr|
             procs[oid] ||= pr
           end
+          conversion_procs_updated
         end
       end
 
@@ -593,7 +599,7 @@ module Sequel
       # If the :prepare option is given and we aren't in a savepoint,
       # prepare the transaction for a two-phase commit.
       def commit_transaction(conn, opts=OPTS)
-        if (s = opts[:prepare]) && _trans(conn)[:savepoint_level] <= 1
+        if (s = opts[:prepare]) && savepoint_level(conn) <= 1
           log_connection_execute(conn, "PREPARE TRANSACTION #{literal(s)}")
         else
           super
@@ -655,6 +661,11 @@ module Sequel
         end
       end
 
+      # Callback used when conversion procs are updated.
+      def conversion_procs_updated
+        nil
+      end
+
       # Convert the hash of named conversion procs into a hash a oid conversion procs. 
       def convert_named_procs_to_procs(named_procs)
         h = {}
@@ -671,6 +682,7 @@ module Sequel
         oids.each do |oid|
           procs[oid] = PG_TYPES[oid]
         end
+        conversion_procs_updated
       end
 
       EXCLUSION_CONSTRAINT_SQL_STATE = '23P01'.freeze
@@ -766,6 +778,10 @@ module Sequel
 
       # DDL statement for creating a table with the given name, columns, and options
       def create_table_prefix_sql(name, options)
+        if on_commit = options[:on_commit]
+          raise(Error, "can't provide :on_commit without :temp to create_table") unless options[:temp]
+          raise(Error, "unsupported on_commit option: #{on_commit.inspect}") unless ON_COMMIT.has_key? on_commit
+        end
         temp_or_unlogged_sql = if options[:temp]
          raise(Error, "can't provide both :temp and :unlogged to create_table") if options[:unlogged]
          temporary_table_sql
@@ -780,7 +796,18 @@ module Sequel
         if inherits = options[:inherits]
           sql << " INHERITS (#{Array(inherits).map{|t| quote_schema_table(t)}.join(', ')})"
         end
+        if on_commit = options[:on_commit]
+          sql << " ON COMMIT #{ON_COMMIT[on_commit]}"
+        end
         sql
+      end
+
+      def create_table_as_sql(name, sql, options)
+        result = create_table_prefix_sql name, options
+        if on_commit = options[:on_commit]
+          result << " ON COMMIT #{ON_COMMIT[on_commit]}"
+        end
+        result << " AS #{sql}"
       end
 
       # Use a PostgreSQL-specific create table generator
@@ -1076,27 +1103,19 @@ module Sequel
       BOOL_FALSE = 'false'.freeze
       BOOL_TRUE = 'true'.freeze
       COMMA_SEPARATOR = ', '.freeze
-      DELETE_CLAUSE_METHODS = Dataset.clause_methods(:delete, %w'delete from using where returning')
-      DELETE_CLAUSE_METHODS_91 = Dataset.clause_methods(:delete, %w'with delete from using where returning')
       EXCLUSIVE = 'EXCLUSIVE'.freeze
       EXPLAIN = 'EXPLAIN '.freeze
       EXPLAIN_ANALYZE = 'EXPLAIN ANALYZE '.freeze
       FOR_SHARE = ' FOR SHARE'.freeze
-      INSERT_CLAUSE_METHODS = Dataset.clause_methods(:insert, %w'insert into columns values returning')
-      INSERT_CLAUSE_METHODS_91 = Dataset.clause_methods(:insert, %w'with insert into columns values returning')
       NULL = LiteralString.new('NULL').freeze
       PG_TIMESTAMP_FORMAT = "TIMESTAMP '%Y-%m-%d %H:%M:%S".freeze
       QUERY_PLAN = 'QUERY PLAN'.to_sym
       ROW_EXCLUSIVE = 'ROW EXCLUSIVE'.freeze
       ROW_SHARE = 'ROW SHARE'.freeze
-      SELECT_CLAUSE_METHODS = Dataset.clause_methods(:select, %w'select distinct columns from join where group having compounds order limit lock')
-      SELECT_CLAUSE_METHODS_84 = Dataset.clause_methods(:select, %w'with select distinct columns from join where group having window compounds order limit lock')
       SHARE = 'SHARE'.freeze
       SHARE_ROW_EXCLUSIVE = 'SHARE ROW EXCLUSIVE'.freeze
       SHARE_UPDATE_EXCLUSIVE = 'SHARE UPDATE EXCLUSIVE'.freeze
       SQL_WITH_RECURSIVE = "WITH RECURSIVE ".freeze
-      UPDATE_CLAUSE_METHODS = Dataset.clause_methods(:update, %w'update table set from where returning')
-      UPDATE_CLAUSE_METHODS_91 = Dataset.clause_methods(:update, %w'with update table set from where returning')
       SPACE = Dataset::SPACE
       FROM = Dataset::FROM
       APOS = Dataset::APOS
@@ -1114,6 +1133,11 @@ module Sequel
       WINDOW = " WINDOW ".freeze
       EMPTY_STRING = ''.freeze
       LOCK_MODES = ['ACCESS SHARE', 'ROW SHARE', 'ROW EXCLUSIVE', 'SHARE UPDATE EXCLUSIVE', 'SHARE', 'SHARE ROW EXCLUSIVE', 'EXCLUSIVE', 'ACCESS EXCLUSIVE'].each{|s| s.freeze}
+
+      Dataset.def_sql_method(self, :delete, [['if server_version >= 90100', %w'with delete from using where returning'], ['else', %w'delete from using where returning']])
+      Dataset.def_sql_method(self, :insert, [['if server_version >= 90100', %w'with insert into columns values returning'], ['else', %w'insert into columns values returning']])
+      Dataset.def_sql_method(self, :select, [['if server_version >= 80400', %w'with select distinct columns from join where group having window compounds order limit lock'], ['else', %w'select distinct columns from join where group having compounds order limit lock']])
+      Dataset.def_sql_method(self, :update, [['if server_version >= 90100', %w'with update table set from where returning'], ['else', %w'update table set from where returning']])
 
       # Shared methods for prepared statements when used with PostgreSQL databases.
       module PreparedStatementMethods
@@ -1165,6 +1189,24 @@ module Sequel
         end
       end
 
+      # Disables automatic use of INSERT ... RETURNING.  You can still use
+      # returning manually to force the use of RETURNING when inserting.
+      #
+      # This is designed for cases where INSERT RETURNING cannot be used,
+      # such as when you are using partitioning with trigger functions
+      # or conditional rules, or when you are using a PostgreSQL version
+      # less than 8.2, or a PostgreSQL derivative that does not support
+      # returning.
+      #
+      # Note that when this method is used, insert will not return the
+      # primary key of the inserted row, you will have to get the primary
+      # key of the inserted row before inserting via nextval, or after
+      # inserting via currval or lastval (making sure to use the same
+      # database connection for currval or lastval).
+      def disable_insert_returning
+        clone(:disable_insert_returning=>true)
+      end
+
       # Return the results of an EXPLAIN query as a string
       def explain(opts=OPTS)
         with_sql((opts[:analyze] ? EXPLAIN_ANALYZE : EXPLAIN) + select_sql).map(QUERY_PLAN).join(CRLF)
@@ -1175,35 +1217,56 @@ module Sequel
         lock_style(:share)
       end
 
-      # PostgreSQL specific full text search syntax, using tsearch2 (included
-      # in 8.3 by default, and available for earlier versions as an add-on).
+      # Run a full text search on PostgreSQL.  By default, searching for the inclusion
+      # of any of the terms in any of the cols.
+      #
+      # Options:
+      # :language :: The language to use for the search (default: 'simple')
+      # :plain :: Whether a plain search should be used (default: false).  In this case,
+      #           terms should be a single string, and it will do a search where cols
+      #           contains all of the words in terms.  This ignores search operators in terms.
+      # :phrase :: Similar to :plain, but also adding an ILIKE filter to ensure that
+      #            returned rows also include the exact phrase used.
       def full_text_search(cols, terms, opts = OPTS)
         lang = opts[:language] || 'simple'
         terms = terms.join(' | ') if terms.is_a?(Array)
-        filter("to_tsvector(?::regconfig, ?) @@ to_tsquery(?::regconfig, ?)", lang, full_text_string_join(cols), lang, terms)
+        to_tsquery = (opts[:phrase] || opts[:plain]) ? 'plainto_tsquery' : 'to_tsquery'
+
+        ds = where(Sequel.lit(["(to_tsvector(", "::regconfig, ", ") @@ #{to_tsquery}(", "::regconfig, ", "))"], lang, full_text_string_join(cols), lang, terms))
+
+        if opts[:phrase]
+          ds = ds.grep(cols, "%#{escape_like(terms)}%", :case_insensitive=>true)
+        end
+
+        ds
       end
 
       # Insert given values into the database.
       def insert(*values)
         if @opts[:returning]
-          # already know which columns to return, let the standard code
-          # handle it
+          # Already know which columns to return, let the standard code handle it
           super
-        elsif @opts[:sql]
-          # raw SQL used, so don't know which table is being inserted
-          # into, and therefore can't determine primary key.  Run the
-          # insert statement and return nil.
+        elsif @opts[:sql] || @opts[:disable_insert_returning]
+          # Raw SQL used or RETURNING disabled, just use the default behavior
+          # and return nil since sequence is not known.
           super
           nil
         else
-          # Force the use of RETURNING with the primary key value.
-          returning(insert_pk).insert(*values){|r| return r.values.first}
+          # Force the use of RETURNING with the primary key value,
+          # unless it has been disabled.
+          if supports_returning?(:insert)
+            returning(insert_pk).insert(*values){|r| return r.values.first}
+          else
+            super
+            nil
+          end
         end
       end
 
-      # Insert a record returning the record inserted
+      # Insert a record returning the record inserted.  Always returns nil without
+      # inserting a query if disable_insert_returning is used.
       def insert_select(*values)
-        returning.insert(*values){|r| return r}
+        returning.insert(*values){|r| return r} unless !supports_returning?(:insert_select) || @opts[:disable_insert_returning]
       end
 
       # Locks all tables in the dataset's FROM clause (but not in JOINs) with
@@ -1227,11 +1290,12 @@ module Sequel
         nil
       end
 
-      # PostgreSQL allows inserting multiple rows at once.
-      def multi_insert_sql(columns, values)
-        sql = LiteralString.new('VALUES ')
-        expression_list_append(sql, values.map{|r| Array(r)})
-        [insert_sql(columns, sql)]
+      def supports_cte?(type=:select)
+        if type == :select
+          server_version >= 80400
+        else
+          server_version >= 90100
+        end
       end
 
       # PostgreSQL supports using the WITH clause in subqueries if it
@@ -1243,6 +1307,11 @@ module Sequel
       # DISTINCT ON is a PostgreSQL extension
       def supports_distinct_on?
         true
+      end
+
+      # True unless insert returning has been disabled for this dataset.
+      def supports_insert_select?
+        !@opts[:disable_insert_returning]
       end
 
       # PostgreSQL 9.3rc1+ supports lateral subqueries
@@ -1257,7 +1326,7 @@ module Sequel
 
       # Returning is always supported.
       def supports_returning?(type)
-        true
+        server_version > 80002
       end
 
       # PostgreSQL supports pattern matching via regular expressions
@@ -1336,15 +1405,6 @@ module Sequel
         raise(InvalidOperation, "Joined datasets cannot be truncated") if opts[:join]
       end
 
-      # PostgreSQL allows deleting from joined datasets
-      def delete_clause_methods
-        if server_version >= 90100
-          DELETE_CLAUSE_METHODS_91
-        else
-          DELETE_CLAUSE_METHODS
-        end
-      end
-
       # Only include the primary table in the main delete clause
       def delete_from_sql(sql)
         sql << FROM
@@ -1356,19 +1416,15 @@ module Sequel
         join_from_sql(:USING, sql)
       end
 
-      # PostgreSQL allows a RETURNING clause.
-      def insert_clause_methods
-        if server_version >= 90100
-          INSERT_CLAUSE_METHODS_91
-        else
-          INSERT_CLAUSE_METHODS
-        end
-      end
-
       # Return the primary key to use for RETURNING in an INSERT statement
       def insert_pk
-        if (f = opts[:from]) && !f.empty? && (pk = db.primary_key(f.first))
-          Sequel::SQL::Identifier.new(pk)
+        if (f = opts[:from]) && !f.empty?
+          case t = f.first
+          when Symbol, String, SQL::Identifier, SQL::QualifiedIdentifier
+            if pk = db.primary_key(t)
+              Sequel::SQL::Identifier.new(pk)
+            end
+          end
         end
       end
 
@@ -1417,9 +1473,9 @@ module Sequel
         BOOL_TRUE
       end
 
-      # The order of clauses in the SELECT SQL statement
-      def select_clause_methods
-        server_version >= 80400 ? SELECT_CLAUSE_METHODS_84 : SELECT_CLAUSE_METHODS
+      # PostgreSQL supports multiple rows in INSERT.
+      def multi_insert_sql_strategy
+        :values
       end
 
       # PostgreSQL requires parentheses around compound datasets if they use
@@ -1462,21 +1518,17 @@ module Sequel
         db.server_version(@opts[:server])
       end
 
+      # PostgreSQL supports quoted function names.
+      def supports_quoted_function_names?
+        true
+      end
+
       # Concatenate the expressions with a space in between
       def full_text_string_join(cols)
         cols = Array(cols).map{|x| SQL::Function.new(:COALESCE, x, EMPTY_STRING)}
         cols = cols.zip([SPACE] * cols.length).flatten
         cols.pop
         SQL::StringExpression.new(:'||', *cols)
-      end
-
-      # PostgreSQL splits the main table from the joined tables
-      def update_clause_methods
-        if server_version >= 90100
-          UPDATE_CLAUSE_METHODS_91
-        else
-          UPDATE_CLAUSE_METHODS
-        end
       end
 
       # Use FROM to specify additional tables in an update query

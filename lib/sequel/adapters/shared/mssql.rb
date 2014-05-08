@@ -34,6 +34,85 @@ module Sequel
       # to :integer.
       DECIMAL_TYPE_RE = /number|numeric|decimal/io
 
+      # Execute the given stored procedure with the given name.
+      #
+      # Options:
+      # :args :: Arguments to stored procedure.  For named argumetns, this should be a
+      #          hash keyed by argument named.  For unnamed arguments, this should be an
+      #          array.  Output parameters to the function are specified using :output.
+      #          You can also name output parameters and provide a type by using an
+      #          array containing :output, the type name, and the parameter name.
+      # :server :: The server/shard on which to execute the procedure.
+      #
+      # This method returns a single hash with the following keys:
+      #
+      # :result :: The result code of the stored procedure
+      # :numrows :: The number of rows affected by the stored procedure
+      # output params :: Values for any output paramters, using the name given for the output parameter
+      #
+      # Examples:
+      #
+      #     DB.call_mssql_sproc(:SequelTest, {:args => ['input arg', :output]})
+      #     DB.call_mssql_sproc(:SequelTest, {:args => ['input arg', [:output, 'int', 'varname']]})
+      #
+      #     named params:
+      #     DB.call_mssql_sproc(:SequelTest, :args => {
+      #       'input_arg1_name' => 'input arg1 value',
+      #       'input_arg2_name' => 'input arg2 value',
+      #       'output_arg_name' => [:output, 'int', 'varname']
+      #     })
+      def call_mssql_sproc(name, opts=OPTS)
+        args = opts[:args] || []
+        names = ['@RC AS RESULT', '@@ROWCOUNT AS NUMROWS']
+        declarations = ['@RC int']
+        values = []
+
+        if args.is_a?(Hash)
+          named_args = true
+          args = args.to_a
+          method = :each
+        else
+          method = :each_with_index
+        end
+
+        args.send(method) do |v, i|
+          if named_args
+            k = v
+            v, type, select = i
+            raise Error, "must provide output parameter name when using output parameters with named arguments" if v == :output && !select
+          else
+            v, type, select = v
+          end
+
+          if v == :output
+            type ||= "nvarchar(max)"
+            if named_args
+              varname = select
+            else
+              varname = "var#{i}"
+              select ||= varname
+            end
+            names << "@#{varname} AS #{quote_identifier(select)}"
+            declarations << "@#{varname} #{type}"
+            value = "@#{varname} OUTPUT"
+          else
+            value = literal(v)
+          end
+
+          if named_args
+            value = "@#{k}=#{value}"
+          end
+
+          values << value
+        end
+
+        sql = "DECLARE #{declarations.join(', ')}; EXECUTE @RC = #{name} #{values.join(', ')}; SELECT #{names.join(', ')}"
+
+        ds = dataset.with_sql(sql)
+        ds = ds.server(opts[:server]) if opts[:server]
+        ds.first
+      end
+
       # Microsoft SQL Server uses the :mssql type.
       def database_type
         :mssql
@@ -114,6 +193,9 @@ module Sequel
       # SQL Server 2008 Express).
       def server_version(server=nil)
         return @server_version if @server_version
+        if @opts[:server_version]
+          return @server_version = Integer(@opts[:server_version])
+        end
         @server_version = synchronize(server) do |conn|
           (conn.server_version rescue nil) if conn.respond_to?(:server_version)
         end
@@ -231,7 +313,7 @@ module Sequel
       # Commit the active transaction on the connection, does not commit/release
       # savepoints.
       def commit_transaction(conn, opts=OPTS)
-        log_connection_execute(conn, commit_transaction_sql) unless _trans(conn)[:savepoint_level] > 1
+        log_connection_execute(conn, commit_transaction_sql) unless savepoint_level(conn) > 1
       end
 
       # SQL to COMMIT a transaction.
@@ -256,7 +338,7 @@ module Sequel
       end
     
       DATABASE_ERROR_REGEXPS = {
-        /Violation of UNIQUE KEY constraint/ => UniqueConstraintViolation,
+        /Violation of UNIQUE KEY constraint|Violation of PRIMARY KEY constraint.+Cannot insert duplicate key/ => UniqueConstraintViolation,
         /conflicted with the (FOREIGN KEY.*|REFERENCE) constraint/ => ForeignKeyConstraintViolation,
         /conflicted with the CHECK constraint/ => CheckConstraintViolation,
         /column does not allow nulls/ => NotNullConstraintViolation,
@@ -332,6 +414,8 @@ module Sequel
           :boolean
         when /\A(?:(?:small)?money)\z/io
           :decimal
+        when /\A(timestamp|rowversion)\z/io
+          :blob
         else
           super
         end
@@ -406,16 +490,14 @@ module Sequel
     end
   
     module DatasetMethods
+      include(Module.new do
+        Dataset.def_sql_method(self, :select, %w'with select distinct limit columns into from lock join where group having order compounds')
+      end)
       include EmulateOffsetWithRowNumber
 
       BOOL_TRUE = '1'.freeze
       BOOL_FALSE = '0'.freeze
       COMMA_SEPARATOR = ', '.freeze
-      DELETE_CLAUSE_METHODS = Dataset.clause_methods(:delete, %w'with delete from output from2 where')
-      INSERT_CLAUSE_METHODS = Dataset.clause_methods(:insert, %w'with insert into columns output values')
-      SELECT_CLAUSE_METHODS = Dataset.clause_methods(:select, %w'with select distinct limit columns into from lock join where group having order compounds')
-      UPDATE_CLAUSE_METHODS = Dataset.clause_methods(:update, %w'with update limit table set output from where')
-      UPDATE_CLAUSE_METHODS_2000 = Dataset.clause_methods(:update, %w'update table set output from where')
       NOLOCK = ' WITH (NOLOCK)'.freeze
       UPDLOCK = ' WITH (UPDLOCK)'.freeze
       WILDCARD = LiteralString.new('*').freeze
@@ -437,8 +519,6 @@ module Sequel
       DATEPART_SECOND_MIDDLE = ') + datepart(ns, '.freeze
       DATEPART_SECOND_CLOSE = ")/1000000000.0) AS double precision)".freeze
       DATEPART_OPEN = "datepart(".freeze
-      UNION_ALL = ' UNION ALL '.freeze
-      SELECT_SPACE = 'SELECT '.freeze
       TIMESTAMP_USEC_FORMAT = ".%03d".freeze
       OUTPUT_INSERTED = " OUTPUT INSERTED.*".freeze
       HEX_START = '0x'.freeze
@@ -455,8 +535,16 @@ module Sequel
       FORMAT_DATE = "'%Y%m%d'".freeze
       CROSS_APPLY = 'CROSS APPLY'.freeze
       OUTER_APPLY = 'OUTER APPLY'.freeze
+      OFFSET = " OFFSET ".freeze
+      ROWS = " ROWS".freeze
+      ROWS_ONLY = " ROWS ONLY".freeze
+      FETCH_NEXT = " FETCH NEXT ".freeze
 
-      Sequel::Dataset.def_mutation_method(:disable_insert_output, :output, :module=>self)
+      Dataset.def_mutation_method(:disable_insert_output, :output, :module=>self)
+      Dataset.def_sql_method(self, :delete, %w'with delete from output from2 where')
+      Dataset.def_sql_method(self, :insert, %w'with insert into columns output values')
+      Dataset.def_sql_method(self, :update, [['if is_2005_or_later?', %w'with update limit table set output from where'], ['else', %w'update table set output from where']])
+
 
       # Allow overriding of the mssql_unicode_strings option at the dataset level.
       attr_writer :mssql_unicode_strings
@@ -472,19 +560,21 @@ module Sequel
         when :'||'
           super(sql, :+, args)
         when :LIKE, :"NOT LIKE"
-          super(sql, op, args.map{|a| LiteralString.new("(#{literal(a)} COLLATE #{CASE_SENSITIVE_COLLATION})")})
+          super(sql, op, args.map{|a| Sequel.lit(["(", " COLLATE #{CASE_SENSITIVE_COLLATION})"], a)})
         when :ILIKE, :"NOT ILIKE"
-          super(sql, (op == :ILIKE ? :LIKE : :"NOT LIKE"), args.map{|a| LiteralString.new("(#{literal(a)} COLLATE #{CASE_INSENSITIVE_COLLATION})")})
-        when :<<
-          sql << complex_expression_arg_pairs(args){|a, b| "(#{literal(a)} * POWER(2, #{literal(b)}))"}
-        when :>>
-          sql << complex_expression_arg_pairs(args){|a, b| "(#{literal(a)} / POWER(2, #{literal(b)}))"}
+          super(sql, (op == :ILIKE ? :LIKE : :"NOT LIKE"), args.map{|a| Sequel.lit(["(", " COLLATE #{CASE_INSENSITIVE_COLLATION})"], a)})
+        when :<<, :>>
+          complex_expression_emulate_append(sql, op, args)
         when :extract
           part = args.at(0)
           raise(Sequel::Error, "unsupported extract argument: #{part.inspect}") unless format = EXTRACT_MAP[part]
           if part == :second
-            expr = literal(args.at(1))
-            sql << DATEPART_SECOND_OPEN << format.to_s << COMMA << expr << DATEPART_SECOND_MIDDLE << expr << DATEPART_SECOND_CLOSE
+            expr = args.at(1)
+            sql << DATEPART_SECOND_OPEN << format.to_s << COMMA
+            literal_append(sql, expr)
+            sql << DATEPART_SECOND_MIDDLE
+            literal_append(sql, expr)
+            sql << DATEPART_SECOND_CLOSE
           else
             sql << DATEPART_OPEN << format.to_s << COMMA
             literal_append(sql, args.at(1))
@@ -551,20 +641,6 @@ module Sequel
         clone(:into => table)
       end
 
-      # MSSQL uses a UNION ALL statement to insert multiple values at once.
-      def multi_insert_sql(columns, values)
-        c = false
-        sql = LiteralString.new('')
-        u = UNION_ALL
-        values.each do |v|
-          sql << u if c
-          sql << SELECT_SPACE
-          expression_list_append(sql, v)
-          c ||= true
-        end
-        [insert_sql(columns, sql)]
-      end
-
       # Allows you to do a dirty read of uncommitted data using WITH (NOLOCK).
       def nolock
         lock_style(:dirty)
@@ -605,9 +681,25 @@ module Sequel
         sql << BRACKET_OPEN << name.to_s.gsub(/\]/, DOUBLE_BRACKET_CLOSE) << BRACKET_CLOSE
       end
       
+      # On MSSQL 2012+ add a default order to the current dataset if an offset is used.
+      # The default offset emulation using a subquery would be used in the unordered
+      # case by default, and that also adds a default order, so it's better to just
+      # avoid the subquery.
+      def select_sql
+        if @opts[:offset] && !@opts[:order] && is_2012_or_later?
+          order(1).select_sql
+        else
+          super
+        end
+      end
+
       # The version of the database server.
       def server_version
         db.server_version(@opts[:server])
+      end
+
+      def supports_cte?(type=:select)
+        is_2005_or_later?
       end
 
       # MSSQL 2005+ supports GROUP BY CUBE.
@@ -650,6 +742,11 @@ module Sequel
         false
       end
       
+      # MSSQL 2012+ supports offsets in correlated subqueries.
+      def supports_offsets_in_correlated_subqueries?
+        is_2012_or_later?
+      end
+
       # MSSQL 2005+ supports the output clause.
       def supports_output_clause?
         is_2005_or_later?
@@ -701,17 +798,16 @@ module Sequel
         server_version >= 10000000
       end
 
+      # Whether we are using SQL Server 2012 or later.
+      def is_2012_or_later?
+        server_version >= 11000000
+      end
+
       # Use strict ISO-8601 format with T between date and time,
       # since that is the format that is multilanguage and not
       # DATEFORMAT dependent.
       def default_timestamp_format
         DEFAULT_TIMESTAMP_FORMAT
-      end
-
-      # MSSQL supports the OUTPUT clause for DELETE statements.
-      # It also allows prepending a WITH clause.
-      def delete_clause_methods
-        DELETE_CLAUSE_METHODS
       end
 
       # Only include the primary table in the main delete clause
@@ -728,6 +824,11 @@ module Sequel
         end
       end
       alias update_from_sql delete_from2_sql
+
+      # Microsoft SQL Server 2012 has native support for offsets, but only for ordered datasets.
+      def emulate_offset_with_row_number?
+        super && !(is_2012_or_later? && @opts[:order])
+      end
       
       # Return the first primary key for the current table.  If this table has
       # multiple primary keys, this will only return one of them.  Used by #_import.
@@ -740,12 +841,6 @@ module Sequel
       # fields.
       def format_timestamp_usec(usec)
         sprintf(TIMESTAMP_USEC_FORMAT, usec/1000)
-      end
-
-      # MSSQL supports the OUTPUT clause for INSERT statements.
-      # It also allows prepending a WITH clause.
-      def insert_clause_methods
-        INSERT_CLAUSE_METHODS
       end
 
       # Use OUTPUT INSERTED.* to return all columns of the inserted row,
@@ -798,9 +893,10 @@ module Sequel
         BOOL_TRUE
       end
       
-      # MSSQL adds the limit before the columns
-      def select_clause_methods
-        SELECT_CLAUSE_METHODS
+      # MSSQL 2008+ supports multiple rows in the VALUES clause, older versions
+      # can use UNION.
+      def multi_insert_sql_strategy
+        is_2008_or_later? ? :values : :union
       end
 
       def select_into_sql(sql)
@@ -814,6 +910,8 @@ module Sequel
       # to allow the limit to be a bound variable.
       def select_limit_sql(sql)
         if l = @opts[:limit]
+          return if is_2012_or_later? && @opts[:order] && @opts[:offset]
+
           if is_2005_or_later?
             sql << TOP_PAREN
             literal_append(sql, l)
@@ -838,6 +936,25 @@ module Sequel
         end
       end
 
+      # On 2012+ when there is an order with an offset, append the offset (and possible
+      # limit) at the end of the order clause.
+      def select_order_sql(sql)
+        super
+        if is_2012_or_later? && @opts[:order]
+          if o = @opts[:offset]
+            sql << OFFSET
+            literal_append(sql, o)
+            sql << ROWS
+
+            if l = @opts[:limit]
+              sql << FETCH_NEXT
+              literal_append(sql, l)
+              sql << ROWS_ONLY
+            end
+          end
+        end
+      end
+
       # SQL fragment for MSSQL's OUTPUT clause.
       def output_sql(sql)
         return unless supports_output_clause?
@@ -856,17 +973,6 @@ module Sequel
       end
       alias delete_output_sql output_sql
       alias update_output_sql output_sql
-
-      # MSSQL supports the OUTPUT and TOP clause for UPDATE statements.
-      # It also allows prepending a WITH clause.  For MSSQL 2000
-      # and below, exclude WITH and TOP.
-      def update_clause_methods
-        if is_2005_or_later?
-          UPDATE_CLAUSE_METHODS
-        else
-          UPDATE_CLAUSE_METHODS_2000
-        end
-      end
 
       # Only include the primary table in the main update clause
       def update_table_sql(sql)

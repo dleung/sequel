@@ -4,7 +4,7 @@ module Sequel
     # by passing a block to a _hook method (e.g. before_save_hook{do_something}).
     # The block is executed when the hook is called (e.g. before_save).
     #
-    # All of the standard hooks are supported, except for after_initialize.
+    # All of the standard hooks are supported.
     # Instance level before hooks are executed in reverse order of addition before
     # calling super.  Instance level after hooks are executed in order of addition
     # after calling super.  If any of the instance level before hook blocks return
@@ -16,6 +16,8 @@ module Sequel
     # be run the first time you save the object (creating it), and the before_update
     # hook will be run the second time you save the object (updating it), and no
     # hooks will be run the third time you save the object.
+    #
+    # Validation hooks are not cleared until after a successful save.
     # 
     # Usage:
     #
@@ -27,7 +29,7 @@ module Sequel
     module InstanceHooks
       module InstanceMethods 
         BEFORE_HOOKS = Sequel::Model::BEFORE_HOOKS
-        AFTER_HOOKS = Sequel::Model::AFTER_HOOKS - [:after_initialize]
+        AFTER_HOOKS = Sequel::Model::AFTER_HOOKS
         HOOKS = BEFORE_HOOKS + AFTER_HOOKS
         HOOKS.each{|h| class_eval(<<-END , __FILE__, __LINE__+1)}
           def #{h}_hook(&block)
@@ -38,7 +40,7 @@ module Sequel
         END
         
         BEFORE_HOOKS.each{|h| class_eval("def #{h}; run_before_instance_hooks(:#{h}) == false ? false : super end", __FILE__, __LINE__)}
-        AFTER_HOOKS.each{|h| class_eval(<<-END, __FILE__, __LINE__ + 1)}
+        (AFTER_HOOKS - [:after_validation, :after_save]).each{|h| class_eval(<<-END, __FILE__, __LINE__ + 1)}
           def #{h}
             super
             run_after_instance_hooks(:#{h})
@@ -46,6 +48,22 @@ module Sequel
             @instance_hooks.delete(:#{h.to_s.sub('after', 'before')})
           end
         END
+
+        # Run after validation hooks, without clearing the validation hooks.
+        def after_validation
+          super
+          run_after_instance_hooks(:after_validation)
+        end
+        
+        # Run after save hooks, clearing both the save and validation hooks.
+        def after_save
+          super
+          run_after_instance_hooks(:after_save)
+          @instance_hooks.delete(:after_save)
+          @instance_hooks.delete(:before_save)
+          @instance_hooks.delete(:after_validation)
+          @instance_hooks.delete(:before_validation)
+        end
         
         private
         

@@ -39,7 +39,7 @@ describe "Dataset" do
     ds._fetch = {:x=>1}
     called = false
     ds.each{|a| called = true; a.should == {:x=>1}}
-    called.should be_true
+    called.should == true
   end
   
   specify "should get quote_identifiers default from database" do
@@ -1148,6 +1148,11 @@ describe "Dataset#from" do
     @dataset.from(:a, @dataset.from(:b).lateral).select_sql.should == "SELECT * FROM a, LATERAL (SELECT * FROM b) AS t1"
   end
 
+  specify "should automatically use a default from table if no from table is present" do
+    def @dataset.empty_from_sql; ' FROM DEFFROM'; end
+    @dataset.select_sql.should == "SELECT * FROM DEFFROM"
+  end
+
   specify "should accept :schema__table___alias symbol format" do
     @dataset.from(:abc__def).select_sql.should == "SELECT * FROM abc.def"
     @dataset.from(:a_b__c).select_sql.should == "SELECT * FROM a_b.c"
@@ -2253,7 +2258,9 @@ describe "Dataset#join_table" do
   specify "should hoist WITH clauses from subqueries if the dataset doesn't support CTEs in subselects" do
     meta_def(@d, :supports_cte?){true}
     meta_def(@d, :supports_cte_in_subselect?){false}
-    @d.join(Sequel.mock.dataset.from(:categories).with(:a, Sequel.mock.dataset.from(:b)), [:id]).sql.should == 'WITH "a" AS (SELECT * FROM b) SELECT * FROM "items" INNER JOIN (SELECT * FROM categories) AS "t1" USING ("id")'
+    ds = Sequel.mock.dataset.from(:categories)
+    meta_def(ds, :supports_cte?){true}
+    @d.join(ds.with(:a, Sequel.mock.dataset.from(:b)), [:id]).sql.should == 'WITH "a" AS (SELECT * FROM b) SELECT * FROM "items" INNER JOIN (SELECT * FROM categories) AS "t1" USING ("id")'
   end
 
   specify "should raise an error if using an array of symbols with a block" do
@@ -2895,6 +2902,7 @@ describe "Dataset#import" do
       "INSERT INTO items (x, y) VALUES (5, 6)",
       'COMMIT']
   end
+
   specify "should accept a columns array and a values array with :slice option" do
     @ds.import([:x, :y], [[1, 2], [3, 4], [5, 6]], :slice => 2)
     @db.sqls.should == ['BEGIN',
@@ -2903,6 +2911,31 @@ describe "Dataset#import" do
       'COMMIT',
       'BEGIN',
       "INSERT INTO items (x, y) VALUES (5, 6)",
+      'COMMIT']
+  end
+
+  specify "should use correct sql for :values strategy" do
+    def @ds.multi_insert_sql_strategy; :values end
+    @ds.import([:x, :y], [[1, 2], [3, 4], [5, 6]])
+    @db.sqls.should == ['BEGIN',
+      "INSERT INTO items (x, y) VALUES (1, 2), (3, 4), (5, 6)",
+      'COMMIT']
+  end
+
+  specify "should use correct sql for :union strategy" do
+    def @ds.multi_insert_sql_strategy; :union end
+    @ds.import([:x, :y], [[1, 2], [3, 4], [5, 6]])
+    @db.sqls.should == ['BEGIN',
+      "INSERT INTO items (x, y) SELECT 1, 2 UNION ALL SELECT 3, 4 UNION ALL SELECT 5, 6",
+      'COMMIT']
+  end
+
+  specify "should use correct sql for :union strategy when FROM is required" do
+    def @ds.empty_from_sql; ' FROM foo' end
+    def @ds.multi_insert_sql_strategy; :union end
+    @ds.import([:x, :y], [[1, 2], [3, 4], [5, 6]])
+    @db.sqls.should == ['BEGIN',
+      "INSERT INTO items (x, y) SELECT 1, 2 FROM foo UNION ALL SELECT 3, 4 FROM foo UNION ALL SELECT 5, 6 FROM foo",
       'COMMIT']
   end
 end
@@ -3254,46 +3287,30 @@ describe "Dataset#grep" do
   end
 end
 
-describe "Dataset default #fetch_rows, #insert, #update, #delete, #with_sql_delete, #truncate, #execute" do
+describe "Dataset default #fetch_rows, #insert, #update, #delete, #truncate, #execute" do
   before do
-    @db = Sequel::Database.new
+    @db = Sequel.mock(:servers=>{:read_only=>{}}, :autoid=>1)
     @ds = @db[:items]
   end
 
   specify "#delete should execute delete SQL" do
-    @db.should_receive(:execute).once.with('DELETE FROM items', :server=>:default)
-    @ds.delete
-    @db.should_receive(:execute_dui).once.with('DELETE FROM items', :server=>:default)
-    @ds.delete
-  end
-
-  specify "#with_sql_delete should execute delete SQL" do
-    sql = 'DELETE FROM foo'
-    @db.should_receive(:execute).once.with(sql, :server=>:default)
-    @ds.with_sql_delete(sql)
-    @db.should_receive(:execute_dui).once.with(sql, :server=>:default)
-    @ds.with_sql_delete(sql)
+    @ds.delete.should == 0
+    @db.sqls.should == ["DELETE FROM items"]
   end
 
   specify "#insert should execute insert SQL" do
-    @db.should_receive(:execute).once.with('INSERT INTO items DEFAULT VALUES', :server=>:default)
-    @ds.insert([])
-    @db.should_receive(:execute_insert).once.with('INSERT INTO items DEFAULT VALUES', :server=>:default)
-    @ds.insert([])
+    @ds.insert([]).should == 1
+    @db.sqls.should == ["INSERT INTO items DEFAULT VALUES"]
   end
 
   specify "#update should execute update SQL" do
-    @db.should_receive(:execute).once.with('UPDATE items SET number = 1', :server=>:default)
-    @ds.update(:number=>1)
-    @db.should_receive(:execute_dui).once.with('UPDATE items SET number = 1', :server=>:default)
-    @ds.update(:number=>1)
+    @ds.update(:number=>1).should == 0
+    @db.sqls.should == ["UPDATE items SET number = 1"]
   end
   
   specify "#truncate should execute truncate SQL" do
-    @db.should_receive(:execute).once.with('TRUNCATE TABLE items', :server=>:default)
     @ds.truncate.should == nil
-    @db.should_receive(:execute_ddl).once.with('TRUNCATE TABLE items', :server=>:default)
-    @ds.truncate.should == nil
+    @db.sqls.should == ["TRUNCATE TABLE items"]
   end
   
   specify "#truncate should raise an InvalidOperation exception if the dataset is filtered" do
@@ -3302,8 +3319,71 @@ describe "Dataset default #fetch_rows, #insert, #update, #delete, #with_sql_dele
   end
   
   specify "#execute should execute the SQL on the database" do
-    @db.should_receive(:execute).once.with('SELECT 1', :server=>:read_only)
     @ds.send(:execute, 'SELECT 1')
+    @db.sqls.should == ["SELECT 1 -- read_only"]
+  end
+end
+
+describe "Dataset#with_sql_*" do
+  before do
+    @db = Sequel.mock(:servers=>{:read_only=>{}}, :autoid=>1, :fetch=>{:id=>1})
+    @ds = @db[:items]
+  end
+
+  specify "#with_sql_insert should execute given insert SQL" do
+    @ds.with_sql_insert('INSERT INTO foo (1)').should == 1
+    @db.sqls.should == ["INSERT INTO foo (1)"]
+  end
+
+  specify "#with_sql_delete should execute given delete SQL" do
+    @ds.with_sql_delete('DELETE FROM foo').should == 0
+    @db.sqls.should == ["DELETE FROM foo"]
+  end
+
+  specify "#with_sql_update should execute given update SQL" do
+    @ds.with_sql_update('UPDATE foo SET a = 1').should == 0
+    @db.sqls.should == ["UPDATE foo SET a = 1"]
+  end
+
+  specify "#with_sql_all should return all rows from running the SQL" do
+    @ds.with_sql_all('SELECT * FROM foo').should == [{:id=>1}]
+    @db.sqls.should == ["SELECT * FROM foo -- read_only"]
+  end
+
+  specify "#with_sql_all should yield each row to the block" do
+    a = []
+    @ds.with_sql_all('SELECT * FROM foo'){|r| a << r}
+    a.should == [{:id=>1}]
+    @db.sqls.should == ["SELECT * FROM foo -- read_only"]
+  end
+
+  specify "#with_sql_each should yield each row to the block" do
+    a = []
+    @ds.with_sql_each('SELECT * FROM foo'){|r| a << r}
+    a.should == [{:id=>1}]
+    @db.sqls.should == ["SELECT * FROM foo -- read_only"]
+  end
+
+  specify "#with_sql_first should return first row" do
+    @ds.with_sql_first('SELECT * FROM foo').should == {:id=>1}
+    @db.sqls.should == ["SELECT * FROM foo -- read_only"]
+  end
+
+  specify "#with_sql_first should return nil if no rows returned" do
+    @db.fetch = []
+    @ds.with_sql_first('SELECT * FROM foo').should == nil
+    @db.sqls.should == ["SELECT * FROM foo -- read_only"]
+  end
+
+  specify "#with_sql_single_value should return first value from first row" do
+    @ds.with_sql_single_value('SELECT * FROM foo').should == 1
+    @db.sqls.should == ["SELECT * FROM foo -- read_only"]
+  end
+
+  specify "#with_sql_single_value should return nil if no rows returned" do
+    @db.fetch = []
+    @ds.with_sql_single_value('SELECT * FROM foo').should == nil
+    @db.sqls.should == ["SELECT * FROM foo -- read_only"]
   end
 end
 
@@ -3582,7 +3662,7 @@ describe "Sequel::Dataset#qualify" do
 
   specify "should handle SQL::WindowFunctions" do
     meta_def(@ds, :supports_window_functions?){true}
-    @ds.select{sum(:over, :args=>:a, :partition=>:b, :order=>:c){}}.qualify.sql.should == 'SELECT sum(t.a) OVER (PARTITION BY t.b ORDER BY t.c) FROM t'
+    @ds.select{sum(:a).over(:partition=>:b, :order=>:c)}.qualify.sql.should == 'SELECT sum(t.a) OVER (PARTITION BY t.b ORDER BY t.c) FROM t'
   end
 
   specify "should handle SQL::DelayedEvaluation" do
@@ -3681,6 +3761,7 @@ describe "Sequel::Dataset #with and #with_recursive" do
   before do
     @db = Sequel::Database.new
     @ds = @db[:t]
+    def @ds.supports_cte?(*) true end
   end
   
   specify "#with should take a name and dataset and use a WITH clause" do
@@ -3719,9 +3800,10 @@ describe "Sequel::Dataset #with and #with_recursive" do
   end
 
   specify "#with should work on insert, update, and delete statements if they support it" do
-    [:insert, :update, :delete].each do |m|
-      meta_def(@ds, :"#{m}_clause_methods"){[:"#{m}_with_sql"] + super()}
-    end
+    sc = class << @ds; self; end
+    Sequel::Dataset.def_sql_method(sc, :delete, %w'with delete from where')
+    Sequel::Dataset.def_sql_method(sc, :insert, %w'with insert into columns values')
+    Sequel::Dataset.def_sql_method(sc, :update, %w'with update table set where')
     @ds.with(:t, @db[:x]).insert_sql(1).should == 'WITH t AS (SELECT * FROM x) INSERT INTO t VALUES (1)'
     @ds.with(:t, @db[:x]).update_sql(:foo=>1).should == 'WITH t AS (SELECT * FROM x) UPDATE t SET foo = 1'
     @ds.with(:t, @db[:x]).delete_sql.should == 'WITH t AS (SELECT * FROM x) DELETE FROM t'
@@ -4271,9 +4353,11 @@ describe "Dataset#returning" do
   before do
     @ds = Sequel.mock(:fetch=>proc{|s| {:foo=>s}})[:t].returning(:foo)
     @pr = proc do
-      [:insert, :update, :delete].each do |m|
-        meta_def(@ds, :"#{m}_clause_methods"){super() + [:"#{m}_returning_sql"]}
-      end
+      def @ds.supports_returning?(*) true end
+      sc = class << @ds; self; end
+      Sequel::Dataset.def_sql_method(sc, :delete, %w'delete from where returning')
+      Sequel::Dataset.def_sql_method(sc, :insert, %w'insert into columns values returning')
+      Sequel::Dataset.def_sql_method(sc, :update, %w'update table set where returning')
     end
   end
   
@@ -4314,7 +4398,7 @@ describe "Dataset emulating bitwise operator support" do
     @ds = Sequel::Database.new.dataset
     @ds.quote_identifiers = true
     def @ds.complex_expression_sql_append(sql, op, args)
-      sql << complex_expression_arg_pairs(args){|a, b| "bitand(#{literal(a)}, #{literal(b)})"}
+      complex_expression_arg_pairs_append(sql, args){|a, b| Sequel.function(:bitand, a, b)}
     end
   end
 
@@ -4327,11 +4411,11 @@ end
 
 describe "Dataset feature defaults" do
   it "should not require aliases for recursive CTEs by default" do
-    Sequel::Database.new.dataset.recursive_cte_requires_column_aliases?.should be_false
+    Sequel::Database.new.dataset.recursive_cte_requires_column_aliases?.should == false
   end
 
   it "should not require placeholder type specifiers by default" do
-    Sequel::Database.new.dataset.requires_placeholder_type_specifiers?.should be_false
+    Sequel::Database.new.dataset.requires_placeholder_type_specifiers?.should == false
   end
 end
 
@@ -4363,13 +4447,13 @@ describe "Dataset extensions" do
   specify "should be able to register an extension with a block and Database#extension call the block" do
     @ds.quote_identifiers = false
     Sequel::Dataset.register_extension(:foo){|db| db.quote_identifiers = true}
-    @ds.extension(:foo).quote_identifiers?.should be_true
+    @ds.extension(:foo).quote_identifiers?.should == true
   end
 
   specify "should be able to register an extension with a callable and Database#extension call the callable" do
     @ds.quote_identifiers = false
     Sequel::Dataset.register_extension(:foo, proc{|db| db.quote_identifiers = true})
-    @ds.extension(:foo).quote_identifiers?.should be_true
+    @ds.extension(:foo).quote_identifiers?.should == true
   end
 
   specify "should be able to load multiple extensions in the same call" do
@@ -4378,7 +4462,7 @@ describe "Dataset extensions" do
     Sequel::Dataset.register_extension(:foo, proc{|ds| ds.quote_identifiers = true})
     Sequel::Dataset.register_extension(:bar, proc{|ds| ds.identifier_input_method = nil})
     ds = @ds.extension(:foo, :bar)
-    ds.quote_identifiers?.should be_true
+    ds.quote_identifiers?.should == true
     ds.identifier_input_method.should be_nil
   end
 
@@ -4562,6 +4646,49 @@ describe "Dataset#paged_each" do
     @ds.limit(nil, 2).paged_each(:rows_per_fetch=>3, &@proc)
     @ds.db.sqls[1...-1].should == ["SELECT * FROM test ORDER BY x LIMIT 3 OFFSET 2", "SELECT * FROM test ORDER BY x LIMIT 3 OFFSET 5", "SELECT * FROM test ORDER BY x LIMIT 3 OFFSET 8", "SELECT * FROM test ORDER BY x LIMIT 3 OFFSET 11"]
   end
+
+  it "should support :strategy=>:filter" do
+    @ds._fetch = @db.each_slice(5).to_a
+    @ds.paged_each(:rows_per_fetch=>5, :strategy=>:filter, &@proc)
+    @ds.db.sqls[1...-1].should == ["SELECT * FROM test ORDER BY x LIMIT 5", "SELECT * FROM test WHERE (x > 4) ORDER BY x LIMIT 5", "SELECT * FROM test WHERE (x > 9) ORDER BY x LIMIT 5"]
+    @rows.should == @db
+
+    @rows = []
+    db = @db.map{|h| h[:y] = h[:x] % 5; h[:z] = h[:x] % 9; h}.sort_by{|h| [h[:z], -h[:y], h[:x]]}
+    @ds._fetch = db.each_slice(5).to_a
+    @ds.order(Sequel.identifier(:z), Sequel.desc(Sequel.qualify(:test, :y)), Sequel.asc(:x)).paged_each(:rows_per_fetch=>5, :strategy=>:filter, &@proc)
+    @ds.db.sqls[1...-1].should == ["SELECT * FROM test ORDER BY z, test.y DESC, x ASC LIMIT 5",
+      "SELECT * FROM test WHERE ((z > 3) OR ((z = 3) AND (test.y < 3)) OR ((z = 3) AND (test.y = 3) AND (x > 3))) ORDER BY z, test.y DESC, x ASC LIMIT 5",
+      "SELECT * FROM test WHERE ((z > 8) OR ((z = 8) AND (test.y < 3)) OR ((z = 8) AND (test.y = 3) AND (x > 8))) ORDER BY z, test.y DESC, x ASC LIMIT 5"]
+    @rows.should == db
+  end
+
+  it "should support :strategy=>:filter with :filter_values option" do
+    db = @db.map{|h| h[:y] = h[:x] % 5; h[:z] = h[:x] % 9; h}.sort_by{|h| [h[:z], -h[:y], h[:x]]}
+    @ds._fetch = db.each_slice(5).to_a
+    @ds.order(Sequel.identifier(:z), Sequel.desc(Sequel.qualify(:test, :y) * 2), Sequel.asc(:x)).paged_each(:rows_per_fetch=>5, :strategy=>:filter, :filter_values=>proc{|row, expr| [row[expr[0].value], row[expr[1].args.first.column] * expr[1].args.last, row[expr[2]]]}, &@proc)
+    @ds.db.sqls[1...-1].should == ["SELECT * FROM test ORDER BY z, (test.y * 2) DESC, x ASC LIMIT 5",
+      "SELECT * FROM test WHERE ((z > 3) OR ((z = 3) AND ((test.y * 2) < 6)) OR ((z = 3) AND ((test.y * 2) = 6) AND (x > 3))) ORDER BY z, (test.y * 2) DESC, x ASC LIMIT 5",
+      "SELECT * FROM test WHERE ((z > 8) OR ((z = 8) AND ((test.y * 2) < 6)) OR ((z = 8) AND ((test.y * 2) = 6) AND (x > 8))) ORDER BY z, (test.y * 2) DESC, x ASC LIMIT 5"]
+    @rows.should == db
+  end
+end
+
+describe "Dataset#current_datetime" do
+  after do
+    Sequel.datetime_class = Time
+  end
+
+  it "should return an instance of Sequel.datetime_class for the current datetime" do
+    t = Sequel::Dataset.new(nil).current_datetime 
+    t.should be_a_kind_of(Time)
+    (Time.now - t < 0.1).should == true
+
+    Sequel.datetime_class = DateTime
+    t = Sequel::Dataset.new(nil).current_datetime 
+    t.should be_a_kind_of(DateTime)
+    (DateTime.now - t < (0.1/86400)).should == true
+  end
 end
 
 describe "Dataset#escape_like" do
@@ -4576,13 +4703,13 @@ end
 
 describe "Dataset#supports_replace?" do
   it "should be false by default" do
-    Sequel::Dataset.new(nil).supports_replace?.should be_false
+    Sequel::Dataset.new(nil).supports_replace?.should == false
   end
 end
 
 describe "Dataset#supports_lateral_subqueries?" do
   it "should be false by default" do
-    Sequel::Dataset.new(nil).supports_lateral_subqueries?.should be_false
+    Sequel::Dataset.new(nil).supports_lateral_subqueries?.should == false
   end
 end
 
@@ -4631,6 +4758,7 @@ end
 describe "Dataset mutation methods" do
   def m(&block)
     ds = Sequel.mock[:t]
+    def ds.supports_cte?(*) true end
     ds.instance_exec(&block)
     ds.sql
   end
@@ -4691,5 +4819,60 @@ describe "Dataset mutation methods" do
     dsc.server!(:a)
     dsc.opts[:server].should == :a
     dsc.graph!(dsc, {:b=>:c}, :table_alias=>:foo).ungraphed!.opts[:graph].should be_nil
+  end
+end
+
+describe "Dataset emulated complex expression operators" do
+  before do
+    @ds = Sequel.mock[:test]
+    def @ds.complex_expression_sql_append(sql, op, args)
+      case op
+      when :&, :|, :^, :%, :<<, :>>, :'B~'
+        complex_expression_emulate_append(sql, op, args)
+      else
+        super
+      end
+    end
+    @n = Sequel.expr(:x).sql_number
+  end
+
+  it "should emulate &" do
+    @ds.literal(Sequel::SQL::NumericExpression.new(:&, @n)).should == "x"
+    @ds.literal(@n & 1).should == "BITAND(x, 1)"
+    @ds.literal(@n & 1 & 2).should == "BITAND(BITAND(x, 1), 2)"
+  end
+
+  it "should emulate |" do
+    @ds.literal(Sequel::SQL::NumericExpression.new(:|, @n)).should == "x"
+    @ds.literal(@n | 1).should == "BITOR(x, 1)"
+    @ds.literal(@n | 1 | 2).should == "BITOR(BITOR(x, 1), 2)"
+  end
+
+  it "should emulate ^" do
+    @ds.literal(Sequel::SQL::NumericExpression.new(:^, @n)).should == "x"
+    @ds.literal(@n ^ 1).should == "BITXOR(x, 1)"
+    @ds.literal(@n ^ 1 ^ 2).should == "BITXOR(BITXOR(x, 1), 2)"
+  end
+
+  it "should emulate %" do
+    @ds.literal(Sequel::SQL::NumericExpression.new(:%, @n)).should == "x"
+    @ds.literal(@n % 1).should == "MOD(x, 1)"
+    @ds.literal(@n % 1 % 2).should == "MOD(MOD(x, 1), 2)"
+  end
+
+  it "should emulate >>" do
+    @ds.literal(Sequel::SQL::NumericExpression.new(:>>, @n)).should == "x"
+    @ds.literal(@n >> 1).should == "(x / power(2, 1))"
+    @ds.literal(@n >> 1 >> 2).should == "(x / power(2, 1) / power(2, 2))"
+  end
+
+  it "should emulate <<" do
+    @ds.literal(Sequel::SQL::NumericExpression.new(:<<, @n)).should == "x"
+    @ds.literal(@n << 1).should == "(x * power(2, 1))"
+    @ds.literal(@n << 1 << 2).should == "(x * power(2, 1) * power(2, 2))"
+  end
+
+  it "should emulate B~" do
+    @ds.literal(~@n).should == "((0 - x) - 1)"
   end
 end

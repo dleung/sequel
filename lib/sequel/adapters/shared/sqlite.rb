@@ -97,7 +97,8 @@ module Sequel
         im = input_identifier_meth
         indexes = {}
         metadata_dataset.with_sql("PRAGMA index_list(?)", im.call(table)).each do |r|
-          next if r[:name] =~ PRIMARY_KEY_INDEX_RE
+          # :only_autocreated internal option can be used to get only autocreated indexes
+          next if (!!(r[:name] =~ PRIMARY_KEY_INDEX_RE) ^ !!opts[:only_autocreated])
           indexes[m.call(r[:name])] = {:unique=>r[:unique].to_i==1}
         end
         indexes.each do |k, v|
@@ -131,7 +132,7 @@ module Sequel
       def sqlite_version
         return @sqlite_version if defined?(@sqlite_version)
         @sqlite_version = begin
-          v = get{sqlite_version{}}
+          v = fetch('SELECT sqlite_version()').single_value
           [10000, 100, 1].zip(v.split('.')).inject(0){|a, m| a + m[0] * Integer(m[1])}
         rescue
           0
@@ -331,10 +332,11 @@ module Sequel
       end
 
       DATABASE_ERROR_REGEXPS = {
-        /is not unique\z/ => UniqueConstraintViolation,
-        /foreign key constraint failed\z/ => ForeignKeyConstraintViolation,
+        /(is|are) not unique\z|PRIMARY KEY must be unique\z|UNIQUE constraint failed: .+\z/ => UniqueConstraintViolation,
+        /foreign key constraint failed\z/i => ForeignKeyConstraintViolation,
+        /\ACHECK constraint failed/ => CheckConstraintViolation,
         /\A(SQLITE ERROR 19 \(CONSTRAINT\) : )?constraint failed\z/ => ConstraintViolation,
-        /may not be NULL\z/ => NotNullConstraintViolation,
+        /may not be NULL\z|NOT NULL constraint failed: .+\z/ => NotNullConstraintViolation,
       }.freeze
       def database_error_regexps
         DATABASE_ERROR_REGEXPS
@@ -389,6 +391,19 @@ module Sequel
           constraints.concat(fks.each{|h| h[:type] = :foreign_key})
         end
 
+        # Determine unique constraints and make sure the new columns have them
+        unique_columns = []
+        indexes(table, :only_autocreated=>true).each_value do |h|
+          unique_columns.concat(h[:columns]) if h[:columns].length == 1 && h[:unique]
+        end
+        unique_columns -= pks
+        unless unique_columns.empty?
+          unique_columns.map!{|c| quote_identifier(c)}
+          def_columns.each do |c|
+            c[:unique] = true if unique_columns.include?(quote_identifier(c[:name]))
+          end
+        end
+        
         def_columns_str = (def_columns.map{|c| column_definition_sql(c)} + constraints.map{|c| constraint_definition_sql(c)}).join(', ')
         new_columns = old_columns.dup
         opts[:new_columns_proc].call(new_columns) if opts[:new_columns_proc]
@@ -482,7 +497,6 @@ module Sequel
     module DatasetMethods
       include Dataset::Replace
 
-      SELECT_CLAUSE_METHODS = Dataset.clause_methods(:select, %w'select distinct columns from join where group having compounds order limit')
       CONSTANT_MAP = {:CURRENT_DATE=>"date(CURRENT_TIMESTAMP, 'localtime')".freeze, :CURRENT_TIMESTAMP=>"datetime(CURRENT_TIMESTAMP, 'localtime')".freeze, :CURRENT_TIME=>"time(CURRENT_TIMESTAMP, 'localtime')".freeze}
       EMULATED_FUNCTION_MAP = {:char_length=>'length'.freeze}
       EXTRACT_MAP = {:year=>"'%Y'", :month=>"'%m'", :day=>"'%d'", :hour=>"'%H'", :minute=>"'%M'", :second=>"'%f'"}
@@ -502,6 +516,11 @@ module Sequel
       HSTAR = "H*".freeze
       DATE_OPEN = "date(".freeze
       DATETIME_OPEN = "datetime(".freeze
+      ONLY_OFFSET = " LIMIT -1 OFFSET ".freeze
+
+      Dataset.def_sql_method(self, :delete, [['if db.sqlite_version >= 30803', %w'with delete from where'], ["else", %w'delete from where']])
+      Dataset.def_sql_method(self, :insert, [['if db.sqlite_version >= 30803', %w'with insert into columns values'], ["else", %w'insert into columns values']])
+      Dataset.def_sql_method(self, :update, [['if db.sqlite_version >= 30803', %w'with update table set where'], ["else", %w'update table set where']])
 
       def cast_sql_append(sql, expr, type)
         if type == Time or type == DateTime
@@ -525,11 +544,7 @@ module Sequel
           sql << NOT_SPACE
           complex_expression_sql_append(sql, (op == :"NOT ILIKE" ? :ILIKE : :LIKE), args)
         when :^
-          sql << complex_expression_arg_pairs(args) do |a, b|
-            a = literal(a)
-            b = literal(b)
-            "((~(#{a} & #{b})) & (#{a} | #{b}))"
-          end
+          complex_expression_arg_pairs_append(sql, args){|a, b| Sequel.lit(["((~(", " & ", ")) & (", " | ", "))"], a, b, a, b)}
         when :extract
           part = args.at(0)
           raise(Sequel::Error, "unsupported extract argument: #{part.inspect}") unless format = EXTRACT_MAP[part]
@@ -593,6 +608,11 @@ module Sequel
         end
       end
       
+      # SQLite 3.8.3+ supports common table expressions.
+      def supports_cte?(type=:select)
+        db.sqlite_version >= 30803
+      end
+
       # SQLite does not support INTERSECT ALL or EXCEPT ALL
       def supports_intersect_except_all?
         false
@@ -666,16 +686,27 @@ module Sequel
         @db.integer_booleans ? '1' : "'t'"
       end
 
-      # SQLite does not support the SQL WITH clause
-      def select_clause_methods
-        SELECT_CLAUSE_METHODS
+      # SQLite only supporting multiple rows in the VALUES clause
+      # starting in 3.7.11.  On older versions, fallback to using a UNION.
+      def multi_insert_sql_strategy
+        db.sqlite_version >= 30711 ? :values : :union
       end
-      
+
       # SQLite does not support FOR UPDATE, but silently ignore it
       # instead of raising an error for compatibility with other
       # databases.
       def select_lock_sql(sql)
         super unless @opts[:lock] == :update
+      end
+
+      def select_only_offset_sql(sql)
+        sql << ONLY_OFFSET
+        literal_append(sql, @opts[:offset])
+      end
+  
+      # SQLite supports quoted function names.
+      def supports_quoted_function_names?
+        true
       end
 
       # SQLite treats a DELETE with no WHERE clause as a TRUNCATE

@@ -9,8 +9,9 @@ module Sequel
     # If offset is used, an order must be provided, because the use of ROW_NUMBER
     # requires an order.
     def select_sql
-      return super unless o = @opts[:offset]
+      return super unless emulate_offset_with_row_number?
 
+      offset = @opts[:offset]
       order = @opts[:order]
       if require_offset_order?
         order ||= default_offset_order
@@ -19,19 +20,25 @@ module Sequel
         end
       end
 
-      columns = clone(:append_sql=>'').columns
+      columns = clone(:append_sql=>'', :placeholder_literal_null=>true).columns
       dsa1 = dataset_alias(1)
       rn = row_number_column
       sql = @opts[:append_sql] || ''
       subselect_sql_append(sql, unlimited.
         unordered.
-        select_append{ROW_NUMBER(:over, :order=>order){}.as(rn)}.
+        select_append{ROW_NUMBER{}.over(:order=>order).as(rn)}.
         from_self(:alias=>dsa1).
         select(*columns).
         limit(@opts[:limit]).
-        where(SQL::Identifier.new(rn) > o).
+        where(SQL::Identifier.new(rn) > offset).
         order(rn))
       sql
+    end
+
+    # This does not support offsets in correlated subqueries, as it requires a query to get
+    # the columns that will be invalid if a correlated subquery is used.
+    def supports_offsets_in_correlated_subqueries?
+      false
     end
 
     private
@@ -45,6 +52,11 @@ module Sequel
     # Whether an order is required when using offset emulation via ROW_NUMBER, true by default.
     def require_offset_order?
       true
+    end
+
+    # Whether to use ROW_NUMBER to emulate offsets
+    def emulate_offset_with_row_number?
+      @opts[:offset] && !@opts[:sql]
     end
   end
 end

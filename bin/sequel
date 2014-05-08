@@ -2,6 +2,7 @@
 
 require 'rubygems'
 require 'optparse'
+$: << File.join(File.dirname(__FILE__), '..', 'lib')
 require 'sequel'
 
 code = nil
@@ -26,7 +27,7 @@ options = OptionParser.new do |opts|
   opts.separator "  sequel postgres://localhost/my_blog"
   opts.separator "  sequel config/database.yml"
   opts.separator ""
-  opts.separator "For more information see http://sequel.rubyforge.org"
+  opts.separator "For more information see http://sequel.jeremyevans.net"
   opts.separator ""
   opts.separator "Options:"
 

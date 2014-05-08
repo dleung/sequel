@@ -140,55 +140,48 @@ your function call:
   ds.where{function(1, a) > 1}
   # WHERE function(1, a) > 1
 
-If the SQL function does not accept any arguments, you need to provide an empty
-block to the method to distinguish it from a call that will produce an
-SQL::Identifier:
+If the SQL function does not accept any arguments, create an identifier, then
+call the function method on it to produce a function:
 
-  ds.select{|o| o.version{}}
-  ds.select{version{}}
+  ds.select{|o| o.version.function}
+  ds.select{version.function}
   # SELECT version()
   
-To use the SQL wildcard (*) as the sole argument in a function call (most often
-used with the count function), you should provide :* as the sole argument to
-the method, and provide an empty block to the method:
+To use the SQL wildcard (*) as the sole argument in a function call, create a
+function without arguments, then call the * method on the function:
   
-  ds.select{|o| o.count(:*){}}
-  ds.select{count(:*){}}
+  ds.select{|o| o.count.function.*}
+  ds.select{count.function.*}
   # SELECT count(*)
 
-To append the DISTINCT keyword before the method arguments, you need to make
-:distinct the first argument of the method call, and provide an empty block to
-the method:
+To append the DISTINCT keyword before the method arguments, just call the
+distinct method on the returned Function:
 
-  ds.select{|o| o.count(:distinct, o.col1){}}
-  ds.select{count(:distinct, col1){}}
+  ds.select{|o| o.count(o.col1).distinct)}
+  ds.select{count(col1).distinct}
   # SELECT count(DISTINCT col1)
   
-To use multiple columns with the DISTINCT keyword, use multiple arguments in
-the method call:
-
-  ds.select{|o| o.count(:distinct, o.col1, o.col2){}}
-  ds.select{count(:distinct, col1, col2){}}
+  ds.select{|o| o.count(o.col1, o.col2).distinct}
+  ds.select{count(col1, col2).distinct}
   # SELECT count(DISTINCT col1, col2)
   
 == SQL::WindowFunctions - SQL window function calls
 
 SQL::WindowFunctions can be thought of as calls to SQL window functions.  Not
 all databases support them, but they are very helpful for certain types of
-queries.  To use them, you need to make :over the first argument of the method
-call, with an optional hash as the second argument, and provide an empty block
-to the method. Here are some examples of use:
+queries.  To use them, you should just call the over method on the Function
+object returned, with the options for the window:
 
-  ds.select{|o| o.rank(:over){}}
-  ds.select{rank(:over){}}
+  ds.select{|o| o.rank.function.over}
+  ds.select{rank.function.over}
   # SELECT rank() OVER ()
   
-  ds.select{|o| o.count(:over, :*=>true){}}
-  ds.select{count(:over, :*=>true){}}
+  ds.select{|o| o.count.function.*.over}
+  ds.select{count.function.*.over}
   # SELECT count(*) OVER ()
   
-  ds.select{|o| o.sum(:over, :args=>o.col1, :partition=>o.col2, :order=>o.col3){}}
-  ds.select{sum(:over, :args=>col1, :partition=>col2, :order=>col3){}}
+  ds.select{|o| o.sum(o.col1).over(:partition=>o.col2, :order=>o.col3)}
+  ds.select{sum(col1).over(:partition=>col2, :order=>col3)}
   # SELECT sum(col1) OVER (PARTITION BY col2 ORDER BY col3)
 
 == Operators

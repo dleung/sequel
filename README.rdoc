@@ -18,12 +18,11 @@ toolkit for Ruby.
 
 == Resources
 
-* {Website}[http://sequel.rubyforge.org]
-* {Blog}[http://sequel.heroku.com]
+* {Website}[http://sequel.jeremyevans.net]
 * {Source code}[http://github.com/jeremyevans/sequel]
 * {Bug tracking}[http://github.com/jeremyevans/sequel/issues]
 * {Google group}[http://groups.google.com/group/sequel-talk]
-* {RDoc}[http://sequel.rubyforge.org/rdoc]
+* {RDoc}[http://sequel.jeremyevans.net/rdoc]
 
 To check out the source code:
   
@@ -35,7 +34,7 @@ If you have any comments or suggestions please post to the Google group.
 
 == Installation
 
-  sudo gem install sequel
+  gem install sequel
   
 == A Short Example
 
@@ -640,12 +639,14 @@ SQL query.
 
 === Associations
 
-Associations are used in order to specify relationships between model classes that reflect relationships between tables in the database, which are usually specified using foreign keys.  You specify model associations via the +many_to_one+, +one_to_one+, +one_to_many+, and +many_to_many+ class methods:
+Associations are used in order to specify relationships between model classes that reflect relationships between tables in the database, which are usually specified using foreign keys.  You specify model associations via class methods:
 
   class Post < Sequel::Model
     many_to_one :author
     one_to_many :comments
+    one_to_one :first_comment, :class=>:Comment, :order=>:id
     many_to_many :tags
+    one_through_one :first_tag, :class=>:Tag, :order=>:name, :right_key=>:tag_id
   end
 
 +many_to_one+ and +one_to_one+ create a getter and setter for each model object:
@@ -745,6 +746,28 @@ You can dynamically customize eager loads for both +eager+ and +eager_graph+ whi
 
   # Eagerly load only replies containing 'foo', and the person and tags for those replies
   Post.eager(:replies=>{proc{|ds| ds.where(Sequel.like(text, '%foo%'))}=>[:person, :tags]}).all
+
+=== Joining with Associations
+
+You can use the association_join method to add a join to the model's dataset based on the assocation:
+
+  Post.association_join(:author)
+  # SELECT * FROM posts
+  # INNER JOIN authors AS author ON (author.id = posts.author_id)
+
+This comes with variants for different join types:
+
+  Post.association_left_join(:replies)
+  # SELECT * FROM posts
+  # LEFT JOIN replies ON (replies.post_id = posts.id)
+
+Similar to the eager loading methods, you can use multiple associations and nested associations:
+
+  Post.association_join(:author, :replies=>:person).all
+  # SELECT * FROM posts
+  # INNER JOIN authors AS author ON (author.id = posts.author_id)
+  # INNER JOIN replies ON (replies.post_id = posts.id)
+  # INNER JOIN people AS person ON (person.id = replies.person_id)
 
 === Extending the underlying dataset
 

@@ -182,7 +182,7 @@ You can also use the <tt>Sequel.as</tt> method to create an alias, and the +as+ 
 
 The easiest way to use SQL functions is via a virtual row:
 
-  DB[:albums].select{func{}} # SELECT func() FROM "albums"
+  DB[:albums].select{func.function} # SELECT func() FROM "albums"
   DB[:albums].select{func(col1, col2)} # SELECT func("col1", "col2") FROM "albums"
 
 You can also use the <tt>Sequel.function</tt> method on the symbol that contains the function name:
@@ -196,33 +196,42 @@ Aggregate functions work the same way as normal functions, since they share the 
 
   Sequel.function(:sum, :column) # sum(column)
 
-However, if you want to use the DISTINCT modifier to an aggregate function, you either have to use literal SQL or a virtual row block:
+To use the DISTINCT modifier to an aggregate function, call the distinct method on the function:
 
-  Sequel.function(:sum, Sequel.lit('DISTINCT column')) # sum(DISTINCT column)
-  DB[:albums].select{sum(:distinct, :column){}} # SELECT sum(DISTINCT column) FROM albums
+  DB[:albums].select{sum(:column).distinct} # SELECT sum(DISTINCT column) FROM albums
 
-If you want to use the wildcard as the sole argument of the aggregate function, you again have to use literal SQL or a virtual row block:
+If you want to use the wildcard as the sole argument of the aggregate function, use the * method on the Function:
 
-  Sequel.function(:count, Sequel.lit('*')) # count(*)
-  DB[:albums].select{count(:*){}} # SELECT count(*) FROM albums
+  Sequel.function(:count).* # count(*)
+  DB[:albums].select{count.function.*} # SELECT count(*) FROM albums
 
 Note that Sequel provides helper methods for aggregate functions such as +count+, +sum+, +min+, +max+, +avg+, and +group_and_count+, which handle common uses of aggregate functions.
 
 === Window Functions
 
-If the database supports window functions, Sequel can handle them using a virtual row block:
+If the database supports window functions, Sequel can handle them by calling the over method on a Function:
 
-  DB[:albums].select{function(:over){}}
+  DB[:albums].select{function.function.over}
   # SELECT function() OVER () FROM albums
 
-  DB[:albums].select{count(:over, :*=>true){}}
+  DB[:albums].select{count.function.*.over}
   # SELECT count(*) OVER () FROM albums
 
-  DB[:albums].select{function(:over, :args=>col1, :partition=>col2, :order=>col3){}}
+  DB[:albums].select{function(:col1).over(:partition=>col2, :order=>col3)}
   # SELECT function(col1) OVER (PARTITION BY col2 ORDER BY col3) FROM albums
 
-  DB[:albums].select{function(:over, :args=>[c1, c2], :partition=>[c3, c4], :order=>[c5, c6]){}}
+  DB[:albums].select{function(c1, c2).over(:partition=>[c3, c4], :order=>[c5, c6])}
   # SELECT function(c1, c2) OVER (PARTITION BY c3, c4 ORDER BY c5, c6) FROM albums
+
+=== Schema Qualified Functions
+
+If the database supports schema qualified functions, Sequel can handle them by calling the function method on a QuailfiedIdentifier:
+
+  DB[:albums].select{schema__function.function}
+  # SELECT schema.function() FROM albums
+  
+  DB[:albums].select{schema__function.function(col, 2, "a")}
+  # SELECT schema.function(col, 2, 'a') FROM albums
 
 === Equality Operator (=)
 

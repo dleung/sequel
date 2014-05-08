@@ -24,9 +24,22 @@ module Sequel
           new_using_server(s, values, &block).save
         end
 
-        # When eagerly loading, if the current dataset has a defined shard and the
-        # dataset that you will be using to get the associated records does not,
-        # use the current dataset's shard for the associated dataset.
+        # Eager load the association with the given eager loader options.
+        def eager_load_results(opts, eo, &block)
+          if (s = eo[:self]) && (server = s.opts[:server])
+            eb = eo[:eager_block]
+            set_server = proc do |ds|
+              ds = eb.call(ds) if eb
+              ds = ds.server(server) unless ds.opts[:server]
+              ds
+            end
+            eo = eo.merge(:eager_block=>set_server)
+          end
+
+          super
+        end
+
+        # REMOVE410
         def eager_loading_dataset(opts, ds, select, associations, eager_options=OPTS)
           ds = super(opts, ds, select, associations, eager_options)
           if !ds.opts[:server] and s = eager_options[:self] and server = s.opts[:server]
@@ -68,6 +81,11 @@ module Sequel
         # Ensure that association datasets are tied to the correct shard.
         def _apply_association_options(*args)
           use_server(super)
+        end
+
+        # Don't use an associated object loader, as it won't respect the shard used.
+        def _associated_object_loader(opts, dynamic_opts)
+          nil
         end
 
         # Ensure that the join table for many_to_many associations uses the correct shard.

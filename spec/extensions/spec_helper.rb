@@ -31,13 +31,15 @@ rescue LoadError
 end
 
 Sequel.extension :meta_def
-Sequel.extension :core_refinements if RUBY_VERSION >= '2.0.0' && respond_to?(:using)
+Sequel.extension :core_refinements if RUBY_VERSION >= '2.0.0' && RUBY_ENGINE == 'ruby'
 
 def skip_warn(s)
   warn "Skipping test of #{s}" if ENV["SKIPPED_TEST_WARN"]
 end
 
-(defined?(RSpec) ? RSpec::Core::ExampleGroup : Spec::Example::ExampleGroup).class_eval do
+require File.join(File.dirname(File.expand_path(__FILE__)), "../rspec_helper.rb")
+
+RSPEC_EXAMPLE_GROUP.class_eval do
   if ENV['SEQUEL_DEPRECATION_WARNINGS']
     class << self
       alias qspecify specify

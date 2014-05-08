@@ -7,23 +7,12 @@ VERS = lambda do
   Sequel.version
 end
 CLEAN.include ["**/.*.sw?", "sequel-*.gem", ".config", "rdoc", "coverage", "www/public/*.html", "www/public/rdoc*", '**/*.rbc']
-SUDO = ENV['SUDO'] || 'sudo'
 
 # Gem Packaging and Release
 
 desc "Build sequel gem"
 task :package=>[:clean] do |p|
   sh %{#{FileUtils::RUBY} -S gem build sequel.gemspec}
-end
-
-desc "Install sequel gem"
-task :install=>[:package] do
-  sh %{#{SUDO} #{FileUtils::RUBY} -S gem install ./#{NAME}-#{VERS.call} --local}
-end
-
-desc "Uninstall sequel gem"
-task :uninstall=>[:clean] do
-  sh %{#{SUDO} #{FileUtils::RUBY} -S gem uninstall #{NAME}}
 end
 
 desc "Publish sequel gem to rubygems.org"
@@ -38,16 +27,11 @@ task :website do
   sh %{#{FileUtils::RUBY} www/make_www.rb}
 end
 
-desc "Update Non-RDoc section of sequel.rubyforge.org"
-task :website_rf_base=>[:website] do
-  sh %{rsync -rt www/public/*.html rubyforge.org:/var/www/gforge-projects/sequel/}
-end
-
 ### RDoc
 
 RDOC_DEFAULT_OPTS = ["--line-numbers", "--inline-source", '--title', 'Sequel: The Database Toolkit for Ruby']
 
-allow_website_rdoc = begin
+begin
   # Sequel uses hanna-nouveau for the website RDoc.
   # Due to bugs in older versions of RDoc, and the
   # fact that hanna-nouveau does not support RDoc 4,
@@ -55,9 +39,7 @@ allow_website_rdoc = begin
   gem 'rdoc', '= 3.12.2'
   gem 'hanna-nouveau'
   RDOC_DEFAULT_OPTS.concat(['-f', 'hanna'])
-  true
 rescue Gem::LoadError
-  false
 end
 
 rdoc_task_class = begin
@@ -80,32 +62,25 @@ if rdoc_task_class
     rdoc.rdoc_files.add %w"README.rdoc CHANGELOG MIT-LICENSE lib/**/*.rb doc/*.rdoc doc/release_notes/*.txt"
   end
 
-  if allow_website_rdoc
-    desc "Make rdoc for website"
-    task :website_rdoc=>[:website_rdoc_main, :website_rdoc_adapters, :website_rdoc_plugins]
-  
-    rdoc_task_class.new(:website_rdoc_main) do |rdoc|
-      rdoc.rdoc_dir = "www/public/rdoc"
-      rdoc.options += RDOC_OPTS + %w'--no-ignore-invalid'
-      rdoc.rdoc_files.add %w"README.rdoc CHANGELOG MIT-LICENSE lib/*.rb lib/sequel/*.rb lib/sequel/{connection_pool,dataset,database,model}/*.rb doc/*.rdoc doc/release_notes/*.txt lib/sequel/extensions/migration.rb lib/sequel/extensions/core_extensions.rb"
-    end
-  
-    rdoc_task_class.new(:website_rdoc_adapters) do |rdoc|
-      rdoc.rdoc_dir = "www/public/rdoc-adapters"
-      rdoc.options += RDOC_DEFAULT_OPTS + %w'--main Sequel --no-ignore-invalid'
-      rdoc.rdoc_files.add %w"lib/sequel/adapters/**/*.rb"
-    end
-  
-    rdoc_task_class.new(:website_rdoc_plugins) do |rdoc|
-      rdoc.rdoc_dir = "www/public/rdoc-plugins"
-      rdoc.options += RDOC_DEFAULT_OPTS + %w'--main Sequel --no-ignore-invalid'
-      rdoc.rdoc_files.add %w"lib/sequel/{extensions,plugins}/**/*.rb doc/core_*"
-    end
-  
-    desc "Update sequel.rubyforge.org"
-    task :website_rf=>[:website, :website_rdoc] do
-      sh %{rsync -rvt www/public/* rubyforge.org:/var/www/gforge-projects/sequel/}
-    end
+  desc "Make rdoc for website"
+  task :website_rdoc=>[:website_rdoc_main, :website_rdoc_adapters, :website_rdoc_plugins]
+
+  rdoc_task_class.new(:website_rdoc_main) do |rdoc|
+    rdoc.rdoc_dir = "www/public/rdoc"
+    rdoc.options += RDOC_OPTS + %w'--no-ignore-invalid'
+    rdoc.rdoc_files.add %w"README.rdoc CHANGELOG MIT-LICENSE lib/*.rb lib/sequel/*.rb lib/sequel/{connection_pool,dataset,database,model}/*.rb doc/*.rdoc doc/release_notes/*.txt lib/sequel/extensions/migration.rb lib/sequel/extensions/core_extensions.rb"
+  end
+
+  rdoc_task_class.new(:website_rdoc_adapters) do |rdoc|
+    rdoc.rdoc_dir = "www/public/rdoc-adapters"
+    rdoc.options += RDOC_DEFAULT_OPTS + %w'--main Sequel --no-ignore-invalid'
+    rdoc.rdoc_files.add %w"lib/sequel/adapters/**/*.rb"
+  end
+
+  rdoc_task_class.new(:website_rdoc_plugins) do |rdoc|
+    rdoc.rdoc_dir = "www/public/rdoc-plugins"
+    rdoc.options += RDOC_DEFAULT_OPTS + %w'--main Sequel --no-ignore-invalid'
+    rdoc.rdoc_files.add %w"lib/sequel/{extensions,plugins}/**/*.rb doc/core_*"
   end
 end
 
@@ -133,7 +108,8 @@ begin
     desc "#{d} with -w, some warnings filtered"
     task "#{name}_w" do
       ENV['RUBYOPT'] ? (ENV['RUBYOPT'] += " -w") : (ENV['RUBYOPT'] = '-w')
-      sh "#{FileUtils::RUBY} -S rake #{name} 2>&1 | egrep -v \"(spec/.*: warning: (possibly )?useless use of == in void context|: warning: instance variable @.* not initialized|: warning: method redefined; discarding old|: warning: previous definition of)|rspec\""
+      rake = ENV['RAKE'] || "#{FileUtils::RUBY} -S rake"
+      sh "#{rake} #{name} 2>&1 | egrep -v \"(spec/.*: warning: (possibly )?useless use of == in void context|: warning: instance variable @.* not initialized|: warning: method redefined; discarding old|: warning: previous definition of)|rspec\""
     end
 
     desc d

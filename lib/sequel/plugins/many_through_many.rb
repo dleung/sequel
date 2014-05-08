@@ -1,6 +1,6 @@
 module Sequel
   module Plugins
-    # The many_through_many plugin allow you to create an association to multiple objects using multiple join tables.
+    # The many_through_many plugin allow you to create an association using multiple join tables.
     # For example, assume the following associations:
     #
     #    Artist.many_to_many :albums
@@ -65,10 +65,27 @@ module Sequel
     # 
     #   Artist.many_through_many :artists, [[:albums_artists, :artist_id, :album_id], [:albums, :id, :id], [:albums_artists, :album_id, :artist_id]],
     #    :distinct=>true
+    # 
+    # In addition to many_through_many, this plugin also adds one_through_many, for an association to a single object through multiple join tables.
+    # This is useful if there are unique constraints on the foreign keys in the join tables that reference back to the current table, or if you want
+    # to set an order on the association and just want the first record.
+    #
+    # Usage:
+    #
+    #   # Make all model subclasses support many_through_many associations
+    #   Sequel::Model.plugin :many_through_many
+    #
+    #   # Make the Album class support many_through_many associations
+    #   Album.plugin :many_through_many
     module ManyThroughMany
       # The AssociationReflection subclass for many_through_many associations.
       class ManyThroughManyAssociationReflection < Sequel::Model::Associations::ManyToManyAssociationReflection
         Sequel::Model::Associations::ASSOCIATION_TYPES[:many_through_many] = self
+
+        # many_through_many and one_through_many associations can be clones
+        def cloneable?(ref)
+          ref[:type] == :many_through_many || ref[:type] == :one_through_many
+        end
 
         # The default associated key alias(es) to use when eager loading
         # associations via eager.
@@ -84,12 +101,24 @@ module Sequel
           END
         end
 
+        # The alias for the first join table.
+        def join_table_alias
+          final_reverse_edge[:alias]
+        end
+
         # Many through many associations don't have a reciprocal
         def reciprocal
           nil
         end
 
         private
+
+        def _associated_dataset
+          ds = associated_class
+          reverse_edges.each{|t| ds = ds.join(t[:table], Array(t[:left]).zip(Array(t[:right])), :table_alias=>t[:alias], :qualify=>:deep)}
+          ft = final_reverse_edge
+          ds.join(ft[:table], Array(ft[:left]).zip(Array(ft[:right])), :table_alias=>ft[:alias], :qualify=>:deep)
+        end
 
         # Make sure to use unique table aliases when lazy loading or eager loading
         def calculate_reverse_edge_aliases(reverse_edges)
@@ -139,12 +168,15 @@ module Sequel
           h
         end
 
-        def filter_by_associations_add_conditions_dataset_filter(ds)
-          reverse_edges.each{|t| ds = ds.join(t[:table], Array(t[:left]).zip(Array(t[:right])), :table_alias=>t[:alias], :qualify=>:deep)}
-          ft = final_reverse_edge
-          ds.join(ft[:table],  Array(ft[:left]).zip(Array(ft[:right])), :table_alias=>ft[:alias], :qualify=>:deep).
-            select(*qualify(ft[:alias], Array(self[:left_key])))
+        def filter_by_associations_limit_key
+          fe = edges.first
+          Array(qualify(fe[:table], fe[:right])) + Array(qualify(associated_class.table_name, associated_class.primary_key))
         end
+      end
+
+      class OneThroughManyAssociationReflection < ManyThroughManyAssociationReflection
+        Sequel::Model::Associations::ASSOCIATION_TYPES[:one_through_many] = self
+        include Sequel::Model::Associations::SingularAssociationReflection
       end
 
       module ClassMethods
@@ -168,15 +200,19 @@ module Sequel
           associate(:many_through_many, name, opts.merge(through.is_a?(Hash) ? through : {:through=>through}), &block)
         end
 
+        # Creates a one_through_many association.  See many_through_many for arguments.
+        def one_through_many(name, through, opts=OPTS, &block)
+          associate(:one_through_many, name, opts.merge(through.is_a?(Hash) ? through : {:through=>through}), &block)
+        end
+
         private
 
         # Create the association methods and :eager_loader and :eager_grapher procs.
         def def_many_through_many(opts)
-          name = opts[:name]
-          model = self
+          one_through_many = opts[:type] == :one_through_many
           opts[:read_only] = true
           opts[:after_load].unshift(:array_uniq!) if opts[:uniq]
-          opts[:cartesian_product_number] ||= 2
+          opts[:cartesian_product_number] ||= one_through_many ? 0 : 2
           opts[:through] = opts[:through].map do |e|
             case e
             when Array
@@ -191,50 +227,17 @@ module Sequel
           end
 
           left_key = opts[:left_key] = opts[:through].first[:left]
-          uses_lcks = opts[:uses_left_composite_keys] = left_key.is_a?(Array)
-          left_keys = Array(left_key)
+          opts[:left_keys] = Array(left_key)
+          opts[:uses_left_composite_keys] = left_key.is_a?(Array)
           left_pk = (opts[:left_primary_key] ||= self.primary_key)
           opts[:eager_loader_key] = left_pk unless opts.has_key?(:eager_loader_key)
-          left_pks = opts[:left_primary_keys] = Array(left_pk)
+          opts[:left_primary_keys] = Array(left_pk)
           lpkc = opts[:left_primary_key_column] ||= left_pk
-          opts[:left_primary_key_columns] ||= Array(lpkc)
-          opts[:dataset] ||= lambda do
-            ds = opts.associated_dataset
-            opts.reverse_edges.each{|t| ds = ds.join(t[:table], Array(t[:left]).zip(Array(t[:right])), :table_alias=>t[:alias], :qualify=>:deep)}
-            ft = opts.final_reverse_edge
-            ds.join(ft[:table],  Array(ft[:left]).zip(Array(ft[:right])) + opts.predicate_keys.zip(left_pks.map{|k| send(k)}), :table_alias=>ft[:alias], :qualify=>:deep)
-          end
+          lpkcs = opts[:left_primary_key_columns] ||= Array(lpkc)
+          opts[:dataset] ||= opts.association_dataset_proc
 
-          slice_range = opts.slice_range
-          left_key_alias = opts[:left_key_alias] ||= opts.default_associated_key_alias
-          opts[:eager_loader] ||= lambda do |eo|
-            h = eo[:id_map]
-            rows = eo[:rows]
-            rows.each{|object| object.associations[name] = []}
-            ds = opts.associated_class 
-            opts.reverse_edges.each{|t| ds = ds.join(t[:table], Array(t[:left]).zip(Array(t[:right])), :table_alias=>t[:alias], :qualify=>:deep)}
-            ft = opts.final_reverse_edge
-            ds = ds.join(ft[:table], Array(ft[:left]).zip(Array(ft[:right])) + [[opts.predicate_key, h.keys]], :table_alias=>ft[:alias], :qualify=>:deep)
-            ds = model.eager_loading_dataset(opts, ds, nil, eo[:associations], eo)
-            if opts.eager_limit_strategy == :window_function
-              delete_rn = true
-              rn = ds.row_number_column
-              ds = apply_window_function_eager_limit_strategy(ds, opts)
-            end
-            ds.all do |assoc_record|
-              assoc_record.values.delete(rn) if delete_rn
-              hash_key = if uses_lcks
-                left_key_alias.map{|k| assoc_record.values.delete(k)}
-              else
-                assoc_record.values.delete(left_key_alias)
-              end
-              next unless objects = h[hash_key]
-              objects.each{|object| object.associations[name].push(assoc_record)}
-            end
-            if opts.eager_limit_strategy == :ruby
-              rows.each{|o| o.associations[name] = o.associations[name][slice_range] || []}
-            end
-          end
+          opts[:left_key_alias] ||= opts.default_associated_key_alias
+          opts[:eager_loader] ||= opts.method(:default_eager_loader)
 
           join_type = opts[:graph_join_type]
           select = opts[:graph_select]
@@ -245,15 +248,31 @@ module Sequel
           opts[:eager_grapher] ||= proc do |eo|
             ds = eo[:self]
             iq = eo[:implicit_qualifier]
-            opts.edges.each do |t|
-              ds = ds.graph(t[:table], t.fetch(:only_conditions, (Array(t[:right]).zip(Array(t[:left])) + t[:conditions])), :select=>false, :table_alias=>ds.unused_table_alias(t[:table]), :join_type=>t[:join_type], :qualify=>:deep, :implicit_qualifier=>iq, &t[:block])
-              iq = nil
+            egls = eo[:limit_strategy]
+            if egls && egls != :ruby
+              associated_key_array = opts.associated_key_array
+              orig_egds = egds = eager_graph_dataset(opts, eo)
+              opts.reverse_edges.each{|t| egds = egds.join(t[:table], Array(t[:left]).zip(Array(t[:right])), :table_alias=>t[:alias], :qualify=>:deep)}
+              ft = opts.final_reverse_edge
+              egds = egds.join(ft[:table], Array(ft[:left]).zip(Array(ft[:right])), :table_alias=>ft[:alias], :qualify=>:deep).
+                select_all(egds.first_source).
+                select_append(*associated_key_array)
+              egds = opts.apply_eager_graph_limit_strategy(egls, egds)
+              ds.graph(egds, associated_key_array.map{|v| v.alias}.zip(Array(lpkcs)) + conditions, :qualify=>:deep, :table_alias=>eo[:table_alias], :implicit_qualifier=>iq, :join_type=>eo[:join_type]||join_type, :from_self_alias=>eo[:from_self_alias], :select=>select||orig_egds.columns, &graph_block)
+            else
+              opts.edges.each do |t|
+                ds = ds.graph(t[:table], t.fetch(:only_conditions, (Array(t[:right]).zip(Array(t[:left])) + t[:conditions])), :select=>false, :table_alias=>ds.unused_table_alias(t[:table]), :join_type=>eo[:join_type]||t[:join_type], :qualify=>:deep, :implicit_qualifier=>iq, :from_self_alias=>eo[:from_self_alias], &t[:block])
+                iq = nil
+              end
+              fe = opts.final_edge
+              ds.graph(opts.associated_class, use_only_conditions ? only_conditions : (Array(opts.right_primary_key).zip(Array(fe[:left])) + conditions), :select=>select, :table_alias=>eo[:table_alias], :qualify=>:deep, :join_type=>eo[:join_type]||join_type, &graph_block)
             end
-            fe = opts.final_edge
-            ds.graph(opts.associated_class, use_only_conditions ? only_conditions : (Array(opts.right_primary_key).zip(Array(fe[:left])) + conditions), :select=>select, :table_alias=>eo[:table_alias], :qualify=>:deep, :join_type=>join_type, &graph_block)
           end
+        end
 
-          def_association_dataset_methods(opts)
+        # Use def_many_through_many, since they share pretty much the same code.
+        def def_one_through_many(opts)
+          def_many_through_many(opts)
         end
       end
 
@@ -291,6 +310,7 @@ module Sequel
 
           association_filter_handle_inversion(op, expr, Array(lpks))
         end
+        alias one_through_many_association_filter_expression many_through_many_association_filter_expression
       end
     end
   end

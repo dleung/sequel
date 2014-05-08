@@ -152,12 +152,13 @@ module Sequel
       BOOL_TRUE = '1'.freeze
       BOOL_FALSE = '0'.freeze
       NULL = LiteralString.new('NULL').freeze
-      SELECT_CLAUSE_METHODS = Dataset.clause_methods(:select, %w'with select distinct limit columns from join where group having compounds order')
-      INSERT_CLAUSE_METHODS = Dataset.clause_methods(:insert, %w'insert into columns values returning')
       FIRST = " FIRST ".freeze
       SKIP = " SKIP ".freeze
       DEFAULT_FROM = " FROM RDB$DATABASE"
       
+      Dataset.def_sql_method(self, :select, %w'with select distinct limit columns from join where group having compounds order')
+      Dataset.def_sql_method(self, :insert, %w'insert into columns values returning')
+
       # Insert given values into the database.
       def insert(*values)
         if @opts[:sql] || @opts[:returning]
@@ -176,6 +177,10 @@ module Sequel
         true
       end
 
+      def supports_cte?(type=:select)
+        type == :select
+      end
+
       def supports_insert_select?
         true
       end
@@ -185,10 +190,14 @@ module Sequel
         false
       end
 
+      def supports_returning?(type)
+        type == :insert
+      end
+
       private
 
-      def insert_clause_methods
-        INSERT_CLAUSE_METHODS
+      def empty_from_sql
+        DEFAULT_FROM
       end
 
       def insert_pk(*values)
@@ -204,19 +213,10 @@ module Sequel
         BOOL_TRUE
       end
 
-      # The order of clauses in the SELECT SQL statement
-      def select_clause_methods
-        SELECT_CLAUSE_METHODS
+      # Firebird can insert multiple rows using a UNION
+      def multi_insert_sql_strategy
+        :union
       end
-      
-        # Use a default FROM table if the dataset does not contain a FROM table.
-        def select_from_sql(sql)
-          if @opts[:from]
-            super
-          else
-            sql << DEFAULT_FROM
-          end
-        end
 
       def select_limit_sql(sql)
         if l = @opts[:limit]

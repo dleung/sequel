@@ -108,7 +108,7 @@ module Sequel
     # PGconn subclass for connection specific methods used with the
     # pg, postgres, or postgres-pr driver.
     class Adapter < ::PGconn
-      DISCONNECT_ERROR_RE = /\Acould not receive data from server/
+      DISCONNECT_ERROR_RE = /\A(?:could not receive data from server|no connection to the server|connection not open)/
       
       self.translate_results = false if respond_to?(:translate_results=)
       
@@ -618,6 +618,7 @@ module Sequel
 
       Database::DatasetClass = self
       APOS = Sequel::Dataset::APOS
+      DEFAULT_CURSOR_NAME = 'sequel_cursor'.freeze
       
       # Yield all rows returned by executing the given SQL and converting
       # the types.
@@ -626,15 +627,22 @@ module Sequel
         execute(sql){|res| yield_hash_rows(res, fetch_rows_set_cols(res)){|h| yield h}}
       end
       
+      # Use a cursor for paging.
+      def paged_each(opts=OPTS, &block)
+        use_cursor(opts).each(&block)
+      end
+
       # Uses a cursor for fetching records, instead of fetching the entire result
       # set at once.  Can be used to process large datasets without holding
-      # all rows in memory (which is what the underlying drivers do
+      # all rows in memory (which is what the underlying drivers may do
       # by default). Options:
       #
-      # * :rows_per_fetch - the number of rows per fetch (default 1000).  Higher
-      #   numbers result in fewer queries but greater memory use.
-      # * :cursor_name - the name assigned to the cursor (default 'sequel_cursor').
-      #   Nested cursors require different names.
+      # :cursor_name :: The name assigned to the cursor (default 'sequel_cursor').
+      #                 Nested cursors require different names.
+      # :hold :: Declare the cursor WITH HOLD and don't use transaction around the
+      #          cursor usage.
+      # :rows_per_fetch :: The number of rows per fetch (default 1000).  Higher
+      #                    numbers result in fewer queries but greater memory use.
       #
       # Usage:
       #
@@ -645,7 +653,19 @@ module Sequel
       # This is untested with the prepared statement/bound variable support,
       # and unlikely to work with either.
       def use_cursor(opts=OPTS)
-        clone(:cursor=>{:rows_per_fetch=>1000, :cursor_name => 'sequel_cursor'}.merge(opts))
+        clone(:cursor=>{:rows_per_fetch=>1000}.merge(opts))
+      end
+
+      # Replace the WHERE clause with one that uses CURRENT OF with the given
+      # cursor name (or the default cursor name).  This allows you to update a
+      # large dataset by updating individual rows while processing the dataset
+      # via a cursor:
+      #
+      #   DB[:huge_table].use_cursor(:rows_per_fetch=>1).each do |row|
+      #     DB[:huge_table].where_current_of.update(:column=>ruby_method(row))
+      #   end
+      def where_current_of(cursor_name=DEFAULT_CURSOR_NAME)
+        clone(:where=>Sequel.lit(['CURRENT OF '], Sequel.identifier(cursor_name)))
       end
 
       if SEQUEL_POSTGRES_USES_PG
@@ -760,11 +780,14 @@ module Sequel
       # Use a cursor to fetch groups of records at a time, yielding them to the block.
       def cursor_fetch_rows(sql)
         server_opts = {:server=>@opts[:server] || :read_only}
-        cursor_name = quote_identifier(@opts[:cursor][:cursor_name])
-        db.transaction(server_opts) do 
+        cursor = @opts[:cursor]
+        hold = cursor[:hold]
+        cursor_name = quote_identifier(cursor[:cursor_name] || DEFAULT_CURSOR_NAME)
+        rows_per_fetch = cursor[:rows_per_fetch].to_i
+
+        db.send(*(hold ? [:synchronize, server_opts[:server]] : [:transaction, server_opts])) do 
           begin
-            execute_ddl("DECLARE #{cursor_name} NO SCROLL CURSOR WITHOUT HOLD FOR #{sql}", server_opts)
-            rows_per_fetch = @opts[:cursor][:rows_per_fetch].to_i
+            execute_ddl("DECLARE #{cursor_name} NO SCROLL CURSOR WITH#{'OUT' unless hold} HOLD FOR #{sql}", server_opts)
             rows_per_fetch = 1000 if rows_per_fetch <= 0
             fetch_sql = "FETCH FORWARD #{rows_per_fetch} FROM #{cursor_name}"
             cols = nil
@@ -780,8 +803,15 @@ module Sequel
                 return if res.ntuples < rows_per_fetch
               end
             end
+          rescue Exception => e
+            raise
           ensure
-            execute_ddl("CLOSE #{cursor_name}", server_opts)
+            begin
+              execute_ddl("CLOSE #{cursor_name}", server_opts)
+            rescue
+              raise e if e
+              raise
+            end
           end
         end
       end

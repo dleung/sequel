@@ -49,7 +49,7 @@ module Sequel
           from.probable_columns
         when Symbol, SQL::Identifier, SQL::QualifiedIdentifier
           schemas = db.instance_variable_get(:@schemas)
-          if schemas && (sch = Sequel.synchronize{schemas[literal(from)]})
+          if schemas && (table = literal(from)) && (sch = Sequel.synchronize{schemas[table]})
             sch.map{|c,_| c}
           end
         end
@@ -71,7 +71,7 @@ module Sequel
         col = c.column
         col.is_a?(SQL::Identifier) ? col.value.to_sym : col.to_sym
       when SQL::AliasedExpression
-        a = c.aliaz
+        a = c.alias
         a.is_a?(SQL::Identifier) ? a.value.to_sym : a.to_sym
       end
     end

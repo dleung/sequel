@@ -27,6 +27,46 @@ describe "PostgreSQL", '#create_table' do
     end
   end
 
+  specify "temporary table should support :on_commit option" do
+    @db.drop_table?(:some_table)
+    @db.transaction do
+      @db.create_table(:some_table, :temp => true, :on_commit => :drop){text :name}
+    end
+    @db.table_exists?(:some_table).should == false
+
+    @db.transaction do
+      @db.create_table(:some_table, :temp => true, :on_commit => :delete_rows){text :name}
+      @db[:some_table].insert('a')
+    end
+    @db.table_exists?(:some_table).should == true
+    @db[:some_table].empty?.should == true
+
+    @db.drop_table(:some_table)
+    @db.transaction do
+      @db.create_table(:some_table, :temp => true, :on_commit => :preserve_rows){text :name}
+      @db[:some_table].insert('a')
+    end
+    @db.table_exists?(:some_table).should == true
+    @db[:some_table].count.should == 1
+    @db.drop_table(:some_table)
+  end
+
+  specify "temporary table should accept :on_commit with :as option" do
+    @db.drop_table?(:some_table)
+    @db.transaction do
+      @db.create_table(:some_table, :temp => true, :on_commit => :drop, :as => 'select 1')
+    end
+    @db.table_exists?(:some_table).should == false
+  end
+
+  specify ":on_commit should raise error if not used on a temporary table" do
+    proc{@db.create_table(:some_table, :on_commit => :drop)}.should raise_error(Sequel::Error)
+  end
+
+  specify ":on_commit should raise error if given unsupported value" do
+    proc{@db.create_table(:some_table, :temp => true, :on_commit => :unsupported){text :name}}.should raise_error(Sequel::Error)
+  end
+
   specify "should create an unlogged table" do
     @db.create_table(:unlogged_dolls, :unlogged => true){text :name}
     check_sqls do
@@ -130,6 +170,39 @@ describe "A PostgreSQL database" do
     @db.server_version.should > 70000
   end
 
+  specify "should support disable_insert_returning" do
+    ds = @db[:public__testfk].disable_insert_returning
+    ds.delete
+    ds.insert.should == nil
+    id = ds.max(:id)
+    ds.select_order_map([:id, :i]).should == [[id, nil]]
+    ds.insert(:i=>id).should == nil
+    ds.select_order_map([:id, :i]).should == [[id, nil], [id+1, id]]
+    ds.insert_select(:i=>ds.max(:id)).should == nil
+    ds.select_order_map([:id, :i]).should == [[id, nil], [id+1, id]]
+    c = Class.new(Sequel::Model(ds))
+    c.class_eval do
+      def before_create
+        self.id = model.max(:id)+1
+        super
+      end
+    end
+    c.create(:i=>id+1).should == c.load(:id=>id+2, :i=>id+1)
+    ds.select_order_map([:id, :i]).should == [[id, nil], [id+1, id], [id+2, id+1]]
+    ds.delete
+  end
+
+  specify "should support functions with and without quoting" do
+    ds = @db[:public__testfk]
+    ds.delete
+    ds.insert
+    ds.get{sum(1)}.should == 1
+    ds.get{Sequel.function('pg_catalog.sum', 1)}.should == 1
+    ds.get{sum.function(1)}.should == 1
+    ds.get{pg_catalog__sum.function(1)}.should == 1
+    ds.delete
+  end
+
   specify "should support a :qualify option to tables and views" do
     @db.tables(:qualify=>true).should include(Sequel.qualify(:public, :testfk))
     begin
@@ -160,6 +233,12 @@ describe "A PostgreSQL database" do
 
   specify "should return uuid fields as strings" do
     @db.get(Sequel.cast('550e8400-e29b-41d4-a716-446655440000', :uuid)).should == '550e8400-e29b-41d4-a716-446655440000'
+  end
+
+  specify "should handle inserts with placeholder literal string tables" do
+    ds = @db.from(Sequel.lit('?', :testfk))
+    ds.insert(:id=>1)
+    ds.select_map(:id).should == [1]
   end
 end
 
@@ -794,6 +873,13 @@ describe "A PostgreSQL database" do
 
     @db[:posts].full_text_search(:title, :$n).call(:select, :n=>'rails').should == [{:title=>'ruby rails', :body=>'yowsa'}]
     @db[:posts].full_text_search(:title, :$n).prepare(:select, :fts_select).call(:n=>'rails').should == [{:title=>'ruby rails', :body=>'yowsa'}]
+
+    @db[:posts].insert(:title=>'jruby rubinius ruby maglev mri iron')
+    @db[:posts].insert(:title=>'ruby jruby maglev mri rubinius iron')
+    @db[:posts].full_text_search(:title, 'rubinius ruby', :phrase=>true).select_order_map(:title).should == ['jruby rubinius ruby maglev mri iron']
+    @db[:posts].full_text_search(:title, 'jruby maglev', :phrase=>true).select_order_map(:title).should == ['ruby jruby maglev mri rubinius iron']
+    @db[:posts].full_text_search(:title, 'rubinius ruby', :plain=>true).select_order_map(:title).should == ['jruby rubinius ruby maglev mri iron', 'ruby jruby maglev mri rubinius iron']
+    @db[:posts].full_text_search(:title, 'jruby maglev', :plain=>true).select_order_map(:title).should == ['jruby rubinius ruby maglev mri iron', 'ruby jruby maglev mri rubinius iron']
   end
 
   specify "should support spatial indexes" do
@@ -1299,13 +1385,13 @@ if DB.dataset.supports_window_functions?
     end
 
     specify "should give correct results for window functions" do
-      @ds.window(:win, :partition=>:group_id, :order=>:id).select(:id){sum(:over, :args=>amount, :window=>win){}}.all.should ==
+      @ds.window(:win, :partition=>:group_id, :order=>:id).select(:id){sum(:amount).over(:window=>win)}.all.should ==
         [{:sum=>1, :id=>1}, {:sum=>11, :id=>2}, {:sum=>111, :id=>3}, {:sum=>1000, :id=>4}, {:sum=>11000, :id=>5}, {:sum=>111000, :id=>6}]
-      @ds.window(:win, :partition=>:group_id).select(:id){sum(:over, :args=>amount, :window=>win, :order=>id){}}.all.should ==
+      @ds.window(:win, :partition=>:group_id).select(:id){sum(:amount).over(:window=>win, :order=>id)}.all.should ==
         [{:sum=>1, :id=>1}, {:sum=>11, :id=>2}, {:sum=>111, :id=>3}, {:sum=>1000, :id=>4}, {:sum=>11000, :id=>5}, {:sum=>111000, :id=>6}]
-      @ds.window(:win, {}).select(:id){sum(:over, :args=>amount, :window=>:win, :order=>id){}}.all.should ==
+      @ds.window(:win, {}).select(:id){sum(:amount).over(:window=>:win, :order=>id)}.all.should ==
         [{:sum=>1, :id=>1}, {:sum=>11, :id=>2}, {:sum=>111, :id=>3}, {:sum=>1111, :id=>4}, {:sum=>11111, :id=>5}, {:sum=>111111, :id=>6}]
-      @ds.window(:win, :partition=>:group_id).select(:id){sum(:over, :args=>amount, :window=>:win, :order=>id, :frame=>:all){}}.all.should ==
+      @ds.window(:win, :partition=>:group_id).select(:id){sum(:amount).over(:window=>:win, :order=>id, :frame=>:all)}.all.should ==
         [{:sum=>111, :id=>1}, {:sum=>111, :id=>2}, {:sum=>111, :id=>3}, {:sum=>111000, :id=>4}, {:sum=>111000, :id=>5}, {:sum=>111000, :id=>6}]
     end
   end
@@ -1410,6 +1496,17 @@ if DB.adapter_scheme == :postgres
       @ds.all.should == @ds.use_cursor.all
     end
 
+    specify "should not swallow errors if closing cursor raises an error" do
+      proc do
+        @db.synchronize do |c|
+          @ds.use_cursor.each do |r|
+            @db.run "CLOSE sequel_cursor"
+            raise ArgumentError
+          end
+        end
+      end.should raise_error(ArgumentError)
+    end
+
     specify "should respect the :rows_per_fetch option" do
       @db.sqls.clear
       @ds.use_cursor.all
@@ -1421,6 +1518,23 @@ if DB.adapter_scheme == :postgres
       check_sqls do
         @db.sqls.length.should == 15
       end
+    end
+
+    specify "should respect the :hold=>true option for creating the cursor WITH HOLD and not using a transaction" do
+      @ds.use_cursor.each{@db.in_transaction?.should == true}
+      check_sqls{@db.sqls.any?{|s| s =~ /WITH HOLD/}.should == false}
+      @ds.use_cursor(:hold=>true).each{@db.in_transaction?.should == false}
+      check_sqls{@db.sqls.any?{|s| s =~ /WITH HOLD/}.should == true}
+    end
+
+    specify "should support updating individual rows based on a cursor" do
+      @db.transaction(:rollback=>:always) do
+        @ds.use_cursor(:rows_per_fetch=>1).each do |row|
+          @ds.where_current_of.update(:x=>Sequel.*(row[:x], 10))
+        end
+        @ds.select_order_map(:x).should == (0..1000).map{|x| x * 10}
+      end
+      @ds.select_order_map(:x).should == (0..1000).to_a
     end
 
     specify "should respect the :cursor_name option" do
@@ -1642,7 +1756,7 @@ if DB.adapter_scheme == :postgres && SEQUEL_POSTGRES_USES_PG && DB.server_versio
         ['', nil].should include(payload)
         called = true
       end.should == 'foo'
-      called.should be_true
+      called.should == true
 
       # Check weird identifier names
       called = false
@@ -1652,7 +1766,7 @@ if DB.adapter_scheme == :postgres && SEQUEL_POSTGRES_USES_PG && DB.server_versio
         ['', nil].should include(payload)
         called = true
       end.should == 'FOO bar'
-      called.should be_true
+      called.should == true
 
       # Check identifier symbols
       called = false
@@ -1662,7 +1776,7 @@ if DB.adapter_scheme == :postgres && SEQUEL_POSTGRES_USES_PG && DB.server_versio
         ['', nil].should include(payload)
         called = true
       end.should == 'foo'
-      called.should be_true
+      called.should == true
 
       called = false
       @db.listen('foo', :after_listen=>proc{@db.notify('foo', :payload=>'bar')}) do |ev, pid, payload|
@@ -1671,7 +1785,7 @@ if DB.adapter_scheme == :postgres && SEQUEL_POSTGRES_USES_PG && DB.server_versio
         payload.should == 'bar'
         called = true
       end.should == 'foo'
-      called.should be_true
+      called.should == true
 
       @db.listen('foo', :after_listen=>proc{@db.notify('foo')}).should == 'foo'
 
@@ -1692,8 +1806,8 @@ if DB.adapter_scheme == :postgres && SEQUEL_POSTGRES_USES_PG && DB.server_versio
           break
         end
       end.should be_nil
-      called.should be_true
-      called2.should be_true
+      called.should == true
+      called2.should == true
       i.should == 1
     end
 
@@ -1701,7 +1815,7 @@ if DB.adapter_scheme == :postgres && SEQUEL_POSTGRES_USES_PG && DB.server_versio
       @db.listen('foo2', :timeout=>0.001).should == nil
       called = false
       @db.listen('foo2', :timeout=>0.001){|ev, pid, payload| called = true}.should == nil
-      called.should be_false
+      called.should == false
       i = 0
       @db.listen('foo2', :timeout=>0.001, :loop=>proc{i+=1; throw :stop if i > 3}){|ev, pid, payload| called = true}.should == nil
       i.should == 4
@@ -1741,7 +1855,7 @@ describe 'PostgreSQL special float handling' do
     specify 'inserts NaN' do
       nan = 0.0/0.0
       @ds.insert(:value=>nan)
-      @ds.all[0][:value].nan?.should be_true
+      @ds.all[0][:value].nan?.should == true
     end
 
     specify 'inserts +Infinity' do
@@ -1778,7 +1892,7 @@ describe 'PostgreSQL array handling' do
       column :r, 'real[]'
       column :dp, 'double precision[]'
     end
-    @tp.call.should == [:integer_array, :integer_array, :bigint_array, :float_array, :float_array]
+    @tp.call.should == [:smallint_array, :integer_array, :bigint_array, :real_array, :float_array]
     @ds.insert(Sequel.pg_array([1], :int2), Sequel.pg_array([nil, 2], :int4), Sequel.pg_array([3, nil], :int8), Sequel.pg_array([4, nil, 4.5], :real), Sequel.pg_array([5, nil, 5.5], "double precision"))
     @ds.count.should == 1
     rs = @ds.all
@@ -1841,12 +1955,12 @@ describe 'PostgreSQL array handling' do
       column :vc, 'varchar[]'
       column :t, 'text[]'
     end
-    @tp.call.should == [:string_array, :string_array, :string_array]
-    @ds.insert(Sequel.pg_array(['a', nil, 'NULL', 'b"\'c'], 'char(4)'), Sequel.pg_array(['a', nil, 'NULL', 'b"\'c'], :varchar), Sequel.pg_array(['a', nil, 'NULL', 'b"\'c'], :text))
+    @tp.call.should == [:character_array, :varchar_array, :string_array]
+    @ds.insert(Sequel.pg_array(['a', nil, 'NULL', 'b"\'c'], 'char(4)'), Sequel.pg_array(['a', nil, 'NULL', 'b"\'c', '', ''], :varchar), Sequel.pg_array(['a', nil, 'NULL', 'b"\'c'], :text))
     @ds.count.should == 1
     rs = @ds.all
     if @native
-      rs.should == [{:c=>['a   ', nil, 'NULL', 'b"\'c'], :vc=>['a', nil, 'NULL', 'b"\'c'], :t=>['a', nil, 'NULL', 'b"\'c']}]
+      rs.should == [{:c=>['a   ', nil, 'NULL', 'b"\'c'], :vc=>['a', nil, 'NULL', 'b"\'c', '', ''], :t=>['a', nil, 'NULL', 'b"\'c']}]
       rs.first.values.each{|v| v.should_not be_a_kind_of(Array)}
       rs.first.values.each{|v| v.to_a.should be_a_kind_of(Array)}
       @ds.delete
@@ -1855,10 +1969,10 @@ describe 'PostgreSQL array handling' do
     end
 
     @ds.delete
-    @ds.insert(Sequel.pg_array([[['a'], [nil]], [['NULL'], ['b"\'c']]], 'char(4)'), Sequel.pg_array([[['a'], ['']], [['NULL'], ['b"\'c']]], :varchar), Sequel.pg_array([[['a'], [nil]], [['NULL'], ['b"\'c']]], :text))
+    @ds.insert(Sequel.pg_array([[['a'], [nil]], [['NULL'], ['b"\'c']]], 'char(4)'), Sequel.pg_array([[['a[],\\[\\]\\,\\""NULL",'], ['']], [['NULL'], ['b"\'c']]], :varchar), Sequel.pg_array([[['a'], [nil]], [['NULL'], ['b"\'c']]], :text))
     rs = @ds.all
     if @native
-      rs.should == [{:c=>[[['a   '], [nil]], [['NULL'], ['b"\'c']]], :vc=>[[['a'], ['']], [['NULL'], ['b"\'c']]], :t=>[[['a'], [nil]], [['NULL'], ['b"\'c']]]}]
+      rs.should == [{:c=>[[['a   '], [nil]], [['NULL'], ['b"\'c']]], :vc=>[[['a[],\\[\\]\\,\\""NULL",'], ['']], [['NULL'], ['b"\'c']]], :t=>[[['a'], [nil]], [['NULL'], ['b"\'c']]]}]
       rs.first.values.each{|v| v.should_not be_a_kind_of(Array)}
       rs.first.values.each{|v| v.to_a.should be_a_kind_of(Array)}
       @ds.delete
@@ -1898,7 +2012,7 @@ describe 'PostgreSQL array handling' do
       column :tz, 'timetz[]'
       column :o, 'oid[]'
     end
-    @tp.call.should == [:blob_array, :time_timezone_array, :integer_array]
+    @tp.call.should == [:blob_array, :time_timezone_array, :oid_array]
     @ds.insert(Sequel.pg_array([Sequel.blob("a\0"), nil], :bytea), Sequel.pg_array([t, nil], :timetz), Sequel.pg_array([1, 2, 3], :oid))
     @ds.count.should == 1
     if @native
@@ -2035,11 +2149,33 @@ describe 'PostgreSQL array handling' do
     end
     c = Class.new(Sequel::Model(@db[:items]))
     c.plugin :pg_typecast_on_load, :i, :f, :d, :t unless @native
+    h = {:i=>[1,2, nil], :f=>[[1, 2.5], [3, 4.5]], :d=>[1, BigDecimal.new('1.000000000000000000001')], :t=>[%w'a b c', ['NULL', nil, '1']]}
+    o = c.create(h)
+    o.i.should == [1, 2, nil]
+    o.f.should == [[1, 2.5], [3, 4.5]]
+    o.d.should == [BigDecimal.new('1'), BigDecimal.new('1.000000000000000000001')]
+    o.t.should == [%w'a b c', ['NULL', nil, '1']]
+    c.where(:i=>o.i, :f=>o.f, :d=>o.d, :t=>o.t).all.should == [o]
+    o2 = c.new(h)
+    c.where(:i=>o2.i, :f=>o2.f, :d=>o2.d, :t=>o2.t).all.should == [o]
+
+    @db.create_table!(:items) do
+      primary_key :id
+      column :i, 'int2[]'
+      column :f, 'real[]'
+      column :d, 'numeric(30,28)[]'
+      column :t, 'varchar[]'
+    end
+    c = Class.new(Sequel::Model(@db[:items]))
+    c.plugin :pg_typecast_on_load, :i, :f, :d, :t unless @native
     o = c.create(:i=>[1,2, nil], :f=>[[1, 2.5], [3, 4.5]], :d=>[1, BigDecimal.new('1.000000000000000000001')], :t=>[%w'a b c', ['NULL', nil, '1']])
     o.i.should == [1, 2, nil]
     o.f.should == [[1, 2.5], [3, 4.5]]
     o.d.should == [BigDecimal.new('1'), BigDecimal.new('1.000000000000000000001')]
     o.t.should == [%w'a b c', ['NULL', nil, '1']]
+    c.where(:i=>o.i, :f=>o.f, :d=>o.d, :t=>o.t).all.should == [o]
+    o2 = c.new(h)
+    c.where(:i=>o2.i, :f=>o2.f, :d=>o2.d, :t=>o2.t).all.should == [o]
   end
 
   specify 'operations/functions with pg_array_ops' do
@@ -2047,26 +2183,26 @@ describe 'PostgreSQL array handling' do
     @db.create_table!(:items){column :i, 'integer[]'; column :i2, 'integer[]'; column :i3, 'integer[]'; column :i4, 'integer[]'; column :i5, 'integer[]'}
     @ds.insert(Sequel.pg_array([1, 2, 3]), Sequel.pg_array([2, 1]), Sequel.pg_array([4, 4]), Sequel.pg_array([[5, 5], [4, 3]]), Sequel.pg_array([1, nil, 5]))
 
-    @ds.get(Sequel.pg_array(:i) > :i3).should be_false
-    @ds.get(Sequel.pg_array(:i3) > :i).should be_true
+    @ds.get(Sequel.pg_array(:i) > :i3).should == false
+    @ds.get(Sequel.pg_array(:i3) > :i).should == true
 
-    @ds.get(Sequel.pg_array(:i) >= :i3).should be_false
-    @ds.get(Sequel.pg_array(:i) >= :i).should be_true
+    @ds.get(Sequel.pg_array(:i) >= :i3).should == false
+    @ds.get(Sequel.pg_array(:i) >= :i).should == true
 
-    @ds.get(Sequel.pg_array(:i3) < :i).should be_false
-    @ds.get(Sequel.pg_array(:i) < :i3).should be_true
+    @ds.get(Sequel.pg_array(:i3) < :i).should == false
+    @ds.get(Sequel.pg_array(:i) < :i3).should == true
 
-    @ds.get(Sequel.pg_array(:i3) <= :i).should be_false
-    @ds.get(Sequel.pg_array(:i) <= :i).should be_true
+    @ds.get(Sequel.pg_array(:i3) <= :i).should == false
+    @ds.get(Sequel.pg_array(:i) <= :i).should == true
 
-    @ds.get(Sequel.expr(5=>Sequel.pg_array(:i).any)).should be_false
-    @ds.get(Sequel.expr(1=>Sequel.pg_array(:i).any)).should be_true
+    @ds.get(Sequel.expr(5=>Sequel.pg_array(:i).any)).should == false
+    @ds.get(Sequel.expr(1=>Sequel.pg_array(:i).any)).should == true
 
-    @ds.get(Sequel.expr(1=>Sequel.pg_array(:i3).all)).should be_false
-    @ds.get(Sequel.expr(4=>Sequel.pg_array(:i3).all)).should be_true
+    @ds.get(Sequel.expr(1=>Sequel.pg_array(:i3).all)).should == false
+    @ds.get(Sequel.expr(4=>Sequel.pg_array(:i3).all)).should == true
 
-    @ds.get(Sequel.expr(1=>Sequel.pg_array(:i)[1..1].any)).should be_true
-    @ds.get(Sequel.expr(2=>Sequel.pg_array(:i)[1..1].any)).should be_false
+    @ds.get(Sequel.expr(1=>Sequel.pg_array(:i)[1..1].any)).should == true
+    @ds.get(Sequel.expr(2=>Sequel.pg_array(:i)[1..1].any)).should == false
 
     @ds.get(Sequel.pg_array(:i2)[1]).should == 2
     @ds.get(Sequel.pg_array(:i2)[1]).should == 2
@@ -2075,14 +2211,14 @@ describe 'PostgreSQL array handling' do
     @ds.get(Sequel.pg_array(:i4)[2][1]).should == 4
     @ds.get(Sequel.pg_array(:i4)[2][2]).should == 3
 
-    @ds.get(Sequel.pg_array(:i).contains(:i2)).should be_true
-    @ds.get(Sequel.pg_array(:i).contains(:i3)).should be_false
+    @ds.get(Sequel.pg_array(:i).contains(:i2)).should == true
+    @ds.get(Sequel.pg_array(:i).contains(:i3)).should == false
 
-    @ds.get(Sequel.pg_array(:i2).contained_by(:i)).should be_true
-    @ds.get(Sequel.pg_array(:i).contained_by(:i2)).should be_false
+    @ds.get(Sequel.pg_array(:i2).contained_by(:i)).should == true
+    @ds.get(Sequel.pg_array(:i).contained_by(:i2)).should == false
 
-    @ds.get(Sequel.pg_array(:i).overlaps(:i2)).should be_true
-    @ds.get(Sequel.pg_array(:i2).overlaps(:i3)).should be_false
+    @ds.get(Sequel.pg_array(:i).overlaps(:i2)).should == true
+    @ds.get(Sequel.pg_array(:i2).overlaps(:i3)).should == false
 
     @ds.get(Sequel.pg_array(:i).dims).should == '[1:3]'
     @ds.get(Sequel.pg_array(:i).length).should == 3
@@ -2098,8 +2234,8 @@ describe 'PostgreSQL array handling' do
     end
     if @db.server_version >= 90300
       @ds.get(Sequel.pg_array(:i5).remove(1).length).should == 2
-      @ds.get(Sequel.pg_array(:i5).replace(1, 4).contains([1])).should be_false
-      @ds.get(Sequel.pg_array(:i5).replace(1, 4).contains([4])).should be_true
+      @ds.get(Sequel.pg_array(:i5).replace(1, 4).contains([1])).should == false
+      @ds.get(Sequel.pg_array(:i5).replace(1, 4).contains([4])).should == true
     end
 
     if @native
@@ -2570,7 +2706,7 @@ describe 'PostgreSQL inet/cidr types' do
     @ds.count.should == 1
     if @native
       rs = @ds.all
-      rs.first.values.all?{|c| c.is_a?(Sequel::Postgres::PGArray)}.should be_true
+      rs.first.values.all?{|c| c.is_a?(Sequel::Postgres::PGArray)}.should == true
       rs.first[:i].first.should == @ipv4
       rs.first[:c].first.should == @ipv4nm
       rs.first[:m].first.should == '12:34:56:78:90:ab'
@@ -2729,70 +2865,70 @@ describe 'PostgreSQL range types' do
   specify 'operations/functions with pg_range_ops' do
     Sequel.extension :pg_range_ops
 
-    @db.get(Sequel.pg_range(1..5, :int4range).op.contains(2..4)).should be_true
-    @db.get(Sequel.pg_range(1..5, :int4range).op.contains(3..6)).should be_false
-    @db.get(Sequel.pg_range(1..5, :int4range).op.contains(0..6)).should be_false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.contains(2..4)).should == true
+    @db.get(Sequel.pg_range(1..5, :int4range).op.contains(3..6)).should == false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.contains(0..6)).should == false
 
-    @db.get(Sequel.pg_range(1..5, :int4range).op.contained_by(0..6)).should be_true
-    @db.get(Sequel.pg_range(1..5, :int4range).op.contained_by(3..6)).should be_false
-    @db.get(Sequel.pg_range(1..5, :int4range).op.contained_by(2..4)).should be_false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.contained_by(0..6)).should == true
+    @db.get(Sequel.pg_range(1..5, :int4range).op.contained_by(3..6)).should == false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.contained_by(2..4)).should == false
 
-    @db.get(Sequel.pg_range(1..5, :int4range).op.overlaps(5..6)).should be_true
-    @db.get(Sequel.pg_range(1...5, :int4range).op.overlaps(5..6)).should be_false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.overlaps(5..6)).should == true
+    @db.get(Sequel.pg_range(1...5, :int4range).op.overlaps(5..6)).should == false
     
-    @db.get(Sequel.pg_range(1..5, :int4range).op.left_of(6..10)).should be_true
-    @db.get(Sequel.pg_range(1..5, :int4range).op.left_of(5..10)).should be_false
-    @db.get(Sequel.pg_range(1..5, :int4range).op.left_of(-1..0)).should be_false
-    @db.get(Sequel.pg_range(1..5, :int4range).op.left_of(-1..3)).should be_false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.left_of(6..10)).should == true
+    @db.get(Sequel.pg_range(1..5, :int4range).op.left_of(5..10)).should == false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.left_of(-1..0)).should == false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.left_of(-1..3)).should == false
 
-    @db.get(Sequel.pg_range(1..5, :int4range).op.right_of(6..10)).should be_false
-    @db.get(Sequel.pg_range(1..5, :int4range).op.right_of(5..10)).should be_false
-    @db.get(Sequel.pg_range(1..5, :int4range).op.right_of(-1..0)).should be_true
-    @db.get(Sequel.pg_range(1..5, :int4range).op.right_of(-1..3)).should be_false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.right_of(6..10)).should == false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.right_of(5..10)).should == false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.right_of(-1..0)).should == true
+    @db.get(Sequel.pg_range(1..5, :int4range).op.right_of(-1..3)).should == false
 
-    @db.get(Sequel.pg_range(1..5, :int4range).op.ends_before(6..10)).should be_true
-    @db.get(Sequel.pg_range(1..5, :int4range).op.ends_before(5..10)).should be_true
-    @db.get(Sequel.pg_range(1..5, :int4range).op.ends_before(-1..0)).should be_false
-    @db.get(Sequel.pg_range(1..5, :int4range).op.ends_before(-1..3)).should be_false
-    @db.get(Sequel.pg_range(1..5, :int4range).op.ends_before(-1..7)).should be_true
+    @db.get(Sequel.pg_range(1..5, :int4range).op.ends_before(6..10)).should == true
+    @db.get(Sequel.pg_range(1..5, :int4range).op.ends_before(5..10)).should == true
+    @db.get(Sequel.pg_range(1..5, :int4range).op.ends_before(-1..0)).should == false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.ends_before(-1..3)).should == false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.ends_before(-1..7)).should == true
 
-    @db.get(Sequel.pg_range(1..5, :int4range).op.starts_after(6..10)).should be_false
-    @db.get(Sequel.pg_range(1..5, :int4range).op.starts_after(5..10)).should be_false
-    @db.get(Sequel.pg_range(1..5, :int4range).op.starts_after(3..10)).should be_false
-    @db.get(Sequel.pg_range(1..5, :int4range).op.starts_after(-1..10)).should be_true
-    @db.get(Sequel.pg_range(1..5, :int4range).op.starts_after(-1..0)).should be_true
-    @db.get(Sequel.pg_range(1..5, :int4range).op.starts_after(-1..3)).should be_true
-    @db.get(Sequel.pg_range(1..5, :int4range).op.starts_after(-5..-1)).should be_true
+    @db.get(Sequel.pg_range(1..5, :int4range).op.starts_after(6..10)).should == false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.starts_after(5..10)).should == false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.starts_after(3..10)).should == false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.starts_after(-1..10)).should == true
+    @db.get(Sequel.pg_range(1..5, :int4range).op.starts_after(-1..0)).should == true
+    @db.get(Sequel.pg_range(1..5, :int4range).op.starts_after(-1..3)).should == true
+    @db.get(Sequel.pg_range(1..5, :int4range).op.starts_after(-5..-1)).should == true
 
-    @db.get(Sequel.pg_range(1..5, :int4range).op.adjacent_to(6..10)).should be_true
-    @db.get(Sequel.pg_range(1...5, :int4range).op.adjacent_to(6..10)).should be_false
+    @db.get(Sequel.pg_range(1..5, :int4range).op.adjacent_to(6..10)).should == true
+    @db.get(Sequel.pg_range(1...5, :int4range).op.adjacent_to(6..10)).should == false
 
-    @db.get((Sequel.pg_range(1..5, :int4range).op + (6..10)).adjacent_to(6..10)).should be_false
-    @db.get((Sequel.pg_range(1..5, :int4range).op + (6..10)).adjacent_to(11..20)).should be_true
+    @db.get((Sequel.pg_range(1..5, :int4range).op + (6..10)).adjacent_to(6..10)).should == false
+    @db.get((Sequel.pg_range(1..5, :int4range).op + (6..10)).adjacent_to(11..20)).should == true
 
-    @db.get((Sequel.pg_range(1..5, :int4range).op * (2..6)).adjacent_to(6..10)).should be_true
-    @db.get((Sequel.pg_range(1..4, :int4range).op * (2..6)).adjacent_to(6..10)).should be_false
+    @db.get((Sequel.pg_range(1..5, :int4range).op * (2..6)).adjacent_to(6..10)).should == true
+    @db.get((Sequel.pg_range(1..4, :int4range).op * (2..6)).adjacent_to(6..10)).should == false
 
-    @db.get((Sequel.pg_range(1..5, :int4range).op - (2..6)).adjacent_to(2..10)).should be_true
-    @db.get((Sequel.pg_range(0..4, :int4range).op - (3..6)).adjacent_to(4..10)).should be_false
+    @db.get((Sequel.pg_range(1..5, :int4range).op - (2..6)).adjacent_to(2..10)).should == true
+    @db.get((Sequel.pg_range(0..4, :int4range).op - (3..6)).adjacent_to(4..10)).should == false
 
     @db.get(Sequel.pg_range(0..4, :int4range).op.lower).should == 0
     @db.get(Sequel.pg_range(0..4, :int4range).op.upper).should == 5
 
-    @db.get(Sequel.pg_range(0..4, :int4range).op.isempty).should be_false
-    @db.get(Sequel::Postgres::PGRange.empty(:int4range).op.isempty).should be_true
+    @db.get(Sequel.pg_range(0..4, :int4range).op.isempty).should == false
+    @db.get(Sequel::Postgres::PGRange.empty(:int4range).op.isempty).should == true
 
-    @db.get(Sequel.pg_range(1..5, :numrange).op.lower_inc).should be_true
-    @db.get(Sequel::Postgres::PGRange.new(1, 5, :exclude_begin=>true, :db_type=>:numrange).op.lower_inc).should be_false
+    @db.get(Sequel.pg_range(1..5, :numrange).op.lower_inc).should == true
+    @db.get(Sequel::Postgres::PGRange.new(1, 5, :exclude_begin=>true, :db_type=>:numrange).op.lower_inc).should == false
 
-    @db.get(Sequel.pg_range(1..5, :numrange).op.upper_inc).should be_true
-    @db.get(Sequel.pg_range(1...5, :numrange).op.upper_inc).should be_false
+    @db.get(Sequel.pg_range(1..5, :numrange).op.upper_inc).should == true
+    @db.get(Sequel.pg_range(1...5, :numrange).op.upper_inc).should == false
 
-    @db.get(Sequel::Postgres::PGRange.new(1, 5, :db_type=>:int4range).op.lower_inf).should be_false
-    @db.get(Sequel::Postgres::PGRange.new(nil, 5, :db_type=>:int4range).op.lower_inf).should be_true
+    @db.get(Sequel::Postgres::PGRange.new(1, 5, :db_type=>:int4range).op.lower_inf).should == false
+    @db.get(Sequel::Postgres::PGRange.new(nil, 5, :db_type=>:int4range).op.lower_inf).should == true
 
-    @db.get(Sequel::Postgres::PGRange.new(1, 5, :db_type=>:int4range).op.upper_inf).should be_false
-    @db.get(Sequel::Postgres::PGRange.new(1, nil, :db_type=>:int4range).op.upper_inf).should be_true
+    @db.get(Sequel::Postgres::PGRange.new(1, 5, :db_type=>:int4range).op.upper_inf).should == false
+    @db.get(Sequel::Postgres::PGRange.new(1, nil, :db_type=>:int4range).op.upper_inf).should == true
   end
 end if DB.server_version >= 90200
 
@@ -2836,7 +2972,7 @@ describe 'PostgreSQL interval types' do
       if @native
         @ds.get(Sequel.cast(:i, String)).should == outstr
         rs = @ds.all
-        rs.first[:i].is_a?(ActiveSupport::Duration).should be_true
+        rs.first[:i].is_a?(ActiveSupport::Duration).should == true
         rs.first[:i].should == ActiveSupport::Duration.new(value, parts)
         rs.first[:i].parts.sort_by{|k,v| k.to_s}.reject{|k,v| v == 0}.should == parts.sort_by{|k,v| k.to_s}
         @ds.delete
@@ -2853,8 +2989,8 @@ describe 'PostgreSQL interval types' do
     @ds.count.should == 1
     if @native
       rs = @ds.all
-      rs.first[:i].is_a?(Sequel::Postgres::PGArray).should be_true
-      rs.first[:i].first.is_a?(ActiveSupport::Duration).should be_true
+      rs.first[:i].is_a?(Sequel::Postgres::PGArray).should == true
+      rs.first[:i].first.is_a?(ActiveSupport::Duration).should == true
       rs.first[:i].first.should == ActiveSupport::Duration.new(31557600 + 2*86400*30 + 3*86400*7 + 4*86400 + 5*3600 + 6*60 + 7, [[:years, 1], [:months, 2], [:days, 25], [:seconds, 18367]])
       rs.first[:i].first.parts.sort_by{|k,v| k.to_s}.should == [[:years, 1], [:months, 2], [:days, 25], [:seconds, 18367]].sort_by{|k,v| k.to_s}
       @ds.delete
@@ -2890,7 +3026,7 @@ describe 'PostgreSQL interval types' do
     c = Class.new(Sequel::Model(@db[:items]))
     c.plugin :pg_typecast_on_load, :i, :c unless @native
     v = c.create(:i=>'1 year 2 mons 25 days 05:06:07').i
-    v.is_a?(ActiveSupport::Duration).should be_true
+    v.is_a?(ActiveSupport::Duration).should == true
     v.should == ActiveSupport::Duration.new(31557600 + 2*86400*30 + 3*86400*7 + 4*86400 + 5*3600 + 6*60 + 7, [[:years, 1], [:months, 2], [:days, 25], [:seconds, 18367]])
     v.parts.sort_by{|k,_| k.to_s}.should == [[:years, 1], [:months, 2], [:days, 25], [:seconds, 18367]].sort_by{|k,_| k.to_s}
   end
@@ -2899,8 +3035,8 @@ end if (begin require 'active_support/duration'; require 'active_support/inflect
 describe 'PostgreSQL row-valued/composite types' do
   before(:all) do
     @db = DB
-    Sequel.extension :pg_array_ops, :pg_row_ops
     @db.extension :pg_array, :pg_row
+    Sequel.extension :pg_array_ops, :pg_row_ops
     @ds = @db[:person]
 
     @db.create_table!(:address) do

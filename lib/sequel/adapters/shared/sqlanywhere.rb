@@ -121,7 +121,7 @@ module Sequel
       private
 
       DATABASE_ERROR_REGEXPS = {
-        /would not be unique/ => Sequel::UniqueConstraintViolation,
+        /would not be unique|Primary key for table.+is not unique/ => Sequel::UniqueConstraintViolation,
         /Column .* in table .* cannot be NULL/ => Sequel::NotNullConstraintViolation,
         /Constraint .* violated: Invalid value in table .*/ => Sequel::CheckConstraintViolation,
         /No primary key value for foreign key .* in table .*/ => Sequel::ForeignKeyConstraintViolation,
@@ -240,8 +240,6 @@ module Sequel
     module DatasetMethods
       BOOL_TRUE = '1'.freeze
       BOOL_FALSE = '0'.freeze
-      INSERT_CLAUSE_METHODS = Dataset.clause_methods(:insert, %w'with insert into columns values')
-      SELECT_CLAUSE_METHODS = Dataset.clause_methods(:select, %w'with select distinct limit columns into from join where group having order compounds lock')
       WILDCARD = LiteralString.new('%').freeze
       TOP = " TOP ".freeze
       START_AT = " START AT ".freeze
@@ -261,6 +259,10 @@ module Sequel
       HSTAR = "H*".freeze
       CROSS_APPLY = 'CROSS APPLY'.freeze
       OUTER_APPLY = 'OUTER APPLY'.freeze
+      ONLY_OFFSET = " TOP 2147483647".freeze
+
+      Dataset.def_sql_method(self, :insert, %w'with insert into columns values')
+      Dataset.def_sql_method(self, :select, %w'with select distinct limit columns into from join where group having order compounds lock')
 
       # Whether to convert smallint to boolean arguments for this dataset.
       # Defaults to the SqlAnywhere module setting.
@@ -270,6 +272,10 @@ module Sequel
 
       # Override the default SqlAnywhere.convert_smallint_to_bool setting for this dataset.
       attr_writer :convert_smallint_to_bool
+
+      def supports_cte?(type=:select)
+        type == :select || type == :insert
+      end
 
       def supports_multiple_column_in?
         false
@@ -306,10 +312,8 @@ module Sequel
         case op
         when :'||'
           super(sql, :+, args)
-        when :<<
-          sql << complex_expression_arg_pairs(args){|a, b| "(#{literal(a)} * POWER(2, #{literal(b)}))"}
-        when :>>
-          sql << complex_expression_arg_pairs(args){|a, b| "(#{literal(a)} / POWER(2, #{literal(b)}))"}
+        when :<<, :>>
+          complex_expression_emulate_append(sql, op, args)
         when :LIKE, :"NOT LIKE"
           sql << Sequel::Dataset::PAREN_OPEN
           literal_append(sql, args.at(0))
@@ -403,14 +407,9 @@ module Sequel
         end
       end
 
-      # Sybase supports the OUTPUT clause for INSERT statements.
-      # It also allows prepending a WITH clause.
-      def insert_clause_methods
-        INSERT_CLAUSE_METHODS
-      end
-
-      def select_clause_methods
-        SELECT_CLAUSE_METHODS
+      # Sybase supports multiple rows in INSERT.
+      def multi_insert_sql_strategy
+        :values
       end
 
       def select_into_sql(sql)
@@ -427,14 +426,21 @@ module Sequel
       # Sybase uses TOP N for limit.  For Sybase TOP (N) is used
       # to allow the limit to be a bound variable.
       def select_limit_sql(sql)
-        if l = @opts[:limit]
-          sql << TOP
-          literal_append(sql, l)
-        end
-        if o = @opts[:offset]
-          sql << START_AT + "("
-          literal_append(sql, o)
-          sql << " + 1)"
+        l = @opts[:limit]
+        o = @opts[:offset]
+        if l || o
+          if l
+            sql << TOP
+            literal_append(sql, l)
+          else
+            sql << ONLY_OFFSET
+          end
+
+          if o 
+            sql << START_AT + "("
+            literal_append(sql, o)
+            sql << " + 1)"
+          end
         end
       end
 

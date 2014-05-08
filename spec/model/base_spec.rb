@@ -577,8 +577,10 @@ end
 
 describe Sequel::Model, ".[] optimization" do
   before do
-    @db = DB.clone
+    @db = Sequel.mock
     @db.quote_identifiers = true
+    def @db.schema(*) [[:id, {:primary_key=>true}]] end
+    def @db.supports_schema_parsing?() true end
     @c = Class.new(Sequel::Model(@db))
   end
 
@@ -729,5 +731,16 @@ describe "Model datasets #with_pk with #with_pk!" do
   it "should not have #[] consider a string as a primary key lookup" do
     @ds['foo'].should == @c.load(:id=>1)
     DB.sqls.should == ["SELECT * FROM a WHERE (foo) LIMIT 1"]
+  end
+end
+
+describe "Model::include" do
+  it "shouldn't change the signature of Module::include" do
+    mod1 = Module.new
+    mod2 = Module.new
+    including_class = Class.new(Sequel::Model(:items)) do
+      include(mod1, mod2)
+    end
+    including_class.included_modules.should include(mod1, mod2)
   end
 end

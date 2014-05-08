@@ -44,6 +44,7 @@ module Sequel
     #
     # Options:
     # :ignore_errors :: Ignore any DatabaseErrors that are raised
+    # :name :: Name to use for index instead of default
     #
     # See <tt>alter_table</tt>.
     def add_index(table, columns, options=OPTS)
@@ -133,6 +134,21 @@ module Sequel
       end
     end
 
+    # Forcibly create a join table, attempting to drop it if it already exists, then creating it.
+    def create_join_table!(hash, options=OPTS)
+      drop_table?(join_table_name(hash, options))
+      create_join_table(hash, options)
+    end
+    
+    # Creates the join table unless it already exists.
+    def create_join_table?(hash, options=OPTS)
+      if supports_create_table_if_not_exists?
+        create_join_table(hash, options.merge(:if_not_exists=>true))
+      elsif !table_exists?(join_table_name(hash, options))
+        create_join_table(hash, options)
+      end
+    end
+
     # Creates a table with the columns given in the provided block:
     #
     #   DB.create_table :posts do
@@ -155,6 +171,7 @@ module Sequel
     # :engine :: The table engine to use for the table.
     #
     # PostgreSQL specific options:
+    # :on_commit :: Either :preserve_rows (default), :drop or :delete_rows.
     # :unlogged :: Create the table as an unlogged table.
     # :inherits :: Inherit from a different tables.  An array can be
     #              specified to inherit from multiple tables.
@@ -315,12 +332,13 @@ module Sequel
     #   DB.drop_view(:cheap_items)
     #   DB.drop_view(:cheap_items, :pricey_items)
     #   DB.drop_view(:cheap_items, :pricey_items, :cascade=>true)
+    #   DB.drop_view(:cheap_items, :pricey_items, :if_exists=>true)
     #
     # Options:
     # :cascade :: Also drop objects depending on this view.
+    # :if_exists :: Do not raise an error if the view does not exist.
     #
     # PostgreSQL specific options:
-    # :if_exists :: Do not raise an error if the view does not exist.
     # :materialized :: Drop a materialized view.
     def drop_view(*names)
       options = names.last.is_a?(Hash) ? names.pop : {}
@@ -704,7 +722,7 @@ module Sequel
     
     # SQL DDL statement to drop a view with the given name.
     def drop_view_sql(name, options)
-      "DROP VIEW #{quote_schema_table(name)}#{' CASCADE' if options[:cascade]}"
+      "DROP VIEW#{' IF EXISTS' if options[:if_exists]} #{quote_schema_table(name)}#{' CASCADE' if options[:cascade]}"
     end
 
     # Proxy the filter_expr call to the dataset, used for creating constraints.

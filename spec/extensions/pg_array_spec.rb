@@ -24,6 +24,9 @@ describe "pg_array extension" do
     c = @converter[1009]
     c.call("{a}").to_a.first.should be_a_kind_of(String)
     c.call("{}").to_a.should == []
+    c.call('{""}').to_a.should == [""]
+    c.call('{"",""}').to_a.should == ["",""]
+    c.call('{"","",""}').to_a.should == ["","",""]
     c.call("{a}").to_a.should == ['a']
     c.call('{"a b"}').to_a.should == ['a b']
     c.call('{a,b}').to_a.should == ['a', 'b']
@@ -126,6 +129,17 @@ describe "pg_array extension" do
     c.call('{NULLA,"NULL",NULL}').to_a.should == ["NULLA", "NULL", nil]
   end
 
+  it "should raise errors when for certain recognized invalid arrays" do
+    c = @converter[1009]
+    proc{c.call('')}.should raise_error(Sequel::Error)
+    proc{c.call('}')}.should raise_error(Sequel::Error)
+    proc{c.call('{{}')}.should raise_error(Sequel::Error)
+    proc{c.call('{}}')}.should raise_error(Sequel::Error)
+    proc{c.call('{a""}')}.should raise_error(Sequel::Error)
+    proc{c.call('{a{}}')}.should raise_error(Sequel::Error)
+    proc{c.call('{""a}')}.should raise_error(Sequel::Error)
+  end
+
   it "should literalize arrays without types correctly" do
     @db.literal(@m::PGArray.new([])).should == 'ARRAY[]'
     @db.literal(@m::PGArray.new([1])).should == 'ARRAY[1]'
@@ -189,7 +203,7 @@ describe "pg_array extension" do
 
   it "should parse array types from the schema correctly" do
     @db.fetch = [{:name=>'id', :db_type=>'integer'}, {:name=>'i', :db_type=>'integer[]'}, {:name=>'f', :db_type=>'real[]'}, {:name=>'d', :db_type=>'numeric[]'}, {:name=>'t', :db_type=>'text[]'}]
-    @db.schema(:items).map{|e| e[1][:type]}.should == [:integer, :integer_array, :float_array, :decimal_array, :string_array]
+    @db.schema(:items).map{|e| e[1][:type]}.should == [:integer, :integer_array, :real_array, :decimal_array, :string_array]
   end
 
   it "should support typecasting of the various array types" do
@@ -283,8 +297,10 @@ describe "pg_array extension" do
     @db.typecast_value(:foo15_array, ['t']).should == [true]
   end
 
-  it "should raise an error if using :scalar_oid option with unexisting scalar conversion proc" do
-    proc{Sequel::Postgres::PGArray.register('foo', :scalar_oid=>0)}.should raise_error(Sequel::Error)
+  it "should not raise an error if using :scalar_oid option with unexisting scalar conversion proc" do
+    h = {}
+    Sequel::Postgres::PGArray.register('foo', :oid=>1234, :scalar_oid=>0, :type_procs=>h)
+    h[1234].call('{t}').should == ["t"]
   end
 
   it "should raise an error if using :converter option and a block argument" do
@@ -315,19 +331,13 @@ describe "pg_array extension" do
     @db.literal(Sequel::Postgres::PG_TYPES[3].call('{}')).should == "'{}'::blah[]"
   end
 
-  it "should use and not override existing database typecast method if :typecast_method option is given" do
-    Sequel::Postgres::PGArray.register('foo', :typecast_method=>:float)
-    @db.fetch = [{:name=>'id', :db_type=>'foo[]'}]
-    @db.schema(:items).map{|e| e[1][:type]}.should == [:float_array]
-  end
-
   it "should support registering custom array types on a per-Database basis" do
     @db.register_array_type('banana', :oid=>7865){|s| s}
     @db.typecast_value(:banana_array, []).should be_a_kind_of(Sequel::Postgres::PGArray)
     @db.fetch = [{:name=>'id', :db_type=>'banana[]'}]
     @db.schema(:items).map{|e| e[1][:type]}.should == [:banana_array]
     @db.conversion_procs.should have_key(7865)
-    @db.respond_to?(:typecast_value_banana_array, true).should be_true
+    @db.respond_to?(:typecast_value_banana_array, true).should == true
 
     db = Sequel.connect('mock://postgres', :quote_identifiers=>false)
     db.extend_datasets(Module.new{def supports_timestamp_timezones?; false; end; def supports_timestamp_usecs?; false; end})
@@ -335,7 +345,7 @@ describe "pg_array extension" do
     db.fetch = [{:name=>'id', :db_type=>'banana[]'}]
     db.schema(:items).map{|e| e[1][:type]}.should == [nil]
     db.conversion_procs.should_not have_key(7865)
-    db.respond_to?(:typecast_value_banana_array, true).should be_false
+    db.respond_to?(:typecast_value_banana_array, true).should == false
   end
 
   it "should automatically look up the array and scalar oids when registering per-Database types" do

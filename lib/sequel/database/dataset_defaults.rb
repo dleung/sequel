@@ -31,7 +31,7 @@ module Sequel
     # Change the default identifier output method to use for all databases,
     def self.identifier_output_method=(v)
       @identifier_output_method = v.nil? ? false : v
-     end
+    end
 
     # The class to use for creating datasets.  Should respond to
     # new with the Database argument as the first argument, and
@@ -137,6 +137,7 @@ module Sequel
     # create datasets.  Usually done after changes to the identifier
     # mangling methods.
     def reset_default_dataset
+      Sequel.synchronize{@symbol_literal_cache.clear}
       @default_dataset = dataset
     end
 

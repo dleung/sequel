@@ -2,7 +2,7 @@ Sequel.require 'adapters/utils/emulate_offset_with_row_number'
 
 module Sequel
   module DB2
-    @use_clob_as_blob = true
+    @use_clob_as_blob = false
 
     class << self
       # Whether to use clob as the generic File type, true by default.
@@ -256,16 +256,8 @@ module Sequel
 
       def complex_expression_sql_append(sql, op, args)
         case op
-        when :&, :|, :^
-          # works with db2 v9.5 and after
-          op = BITWISE_METHOD_MAP[op]
-          sql << complex_expression_arg_pairs(args){|a, b| literal(SQL::Function.new(op, a, b))}
-        when :<<
-          sql << complex_expression_arg_pairs(args){|a, b| "(#{literal(a)} * POWER(2, #{literal(b)}))"}
-        when :>>
-          sql << complex_expression_arg_pairs(args){|a, b| "(#{literal(a)} / POWER(2, #{literal(b)}))"}
-        when :%
-          sql << complex_expression_arg_pairs(args){|a, b| "MOD(#{literal(a)}, #{literal(b)})"}
+        when :&, :|, :^, :%, :<<, :>>
+          complex_expression_emulate_append(sql, op, args)
         when :'B~'
           literal_append(sql, SQL::Function.new(:BITNOT, *args))
         when :extract
@@ -276,6 +268,10 @@ module Sequel
         else
           super
         end
+      end
+
+      def supports_cte?(type=:select)
+        type == :select
       end
 
       # DB2 supports GROUP BY CUBE
@@ -325,6 +321,10 @@ module Sequel
 
       private
 
+      def empty_from_sql
+        EMPTY_FROM_TABLE
+      end
+
       # DB2 needs the standard workaround to insert all default values into
       # a table with more than one column.
       def insert_supports_empty_values?
@@ -350,14 +350,14 @@ module Sequel
         end
       end
 
+      # DB2 can insert multiple rows using a UNION
+      def multi_insert_sql_strategy
+        :union
+      end
+
       # DB2 does not require that ROW_NUMBER be ordered.
       def require_offset_order?
         false
-      end
-
-      # Add a fallback table for empty from situation
-      def select_from_sql(sql)
-        @opts[:from] ? super : (sql << EMPTY_FROM_TABLE)
       end
 
       # Modify the sql to limit the number of rows returned
@@ -382,6 +382,11 @@ module Sequel
         end
       end
       
+      # DB2 supports quoted function names.
+      def supports_quoted_function_names?
+        true
+      end
+
       def _truncate_sql(table)
         # "TRUNCATE #{table} IMMEDIATE" is only for newer version of db2, so we
         # use the following one

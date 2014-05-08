@@ -5,6 +5,7 @@ describe Sequel::Model, "class dataset methods"  do
     @db = Sequel.mock
     @c = Class.new(Sequel::Model(@db[:items]))
     @d = @c.dataset
+    def @d.supports_cte?(*) true end
     @d._fetch = {:id=>1}
     @d.autoid = 1
     @d.numrows = 0
@@ -25,7 +26,7 @@ describe Sequel::Model, "class dataset methods"  do
     @c.each{|r| r.should == @c.load(:id=>1)}.should == @d
     @db.sqls.should == ["SELECT * FROM items"]
     @c.each_server{|r| r.opts[:server].should == :default}
-    @c.empty?.should be_false
+    @c.empty?.should == false
     @db.sqls.should == ["SELECT 1 AS one FROM items LIMIT 1"]
     @c.except(@d, :from_self=>false).sql.should == "SELECT * FROM items EXCEPT SELECT * FROM items"
     @c.exclude(:a).sql.should == "SELECT * FROM items WHERE NOT a"

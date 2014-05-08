@@ -1,3 +1,239 @@
+=== 4.10.0 (2014-05-01)
+
+* Make Model.include API same as Module.include (ged) (#803)
+
+* Dataset::PlaceholderLiteralizer now handles DelayedEvaluations correctly (jeremyevans)
+
+* Refactor type conversion in the jdbc adapter, for up to a 20% speedup (jeremyevans)
+
+* Add Dataset#with_fetch_size to jdbc adapter, for setting fetch size for JDBC ResultSets (jeremyevans)
+
+* Default to a fetch_size of 100 in the jdbc/oracle adapter, similar to the oci8-based oracle adapter (jeremyevans)
+
+* Add Database#fetch_size accessor and :fetch_size option to jdbc adapter, for setting JDBC Statement fetch size (jeremyevans)
+
+* Automatically determine array type in pg_array_associations plugin, explicitly cast arrays in more places (jeremyevans, maccman) (#800)
+
+* Speed up Dataset#literal for symbols 60% by caching results, speeding up dataset literalization up to 40% or more (jeremyevans)
+
+* Speed up Sequel.split_symbol 10-20x by caching results, speeding up dataset literalization up to 80% or more (jeremyevans)
+
+* Speed up dataset literalization for simple datasets by up to 100% (jeremyevans)
+
+* Support :fractional_seconds Database option on MySQL 5.6.5+ to support fractional seconds by default (jeremyevans) (#797)
+
+* Work around MySQL 5.6+ bug when combining DROP FOREIGN KEY and DROP INDEX in same ALTER TABLE statement (jeremyevans)
+
+* Make auto_validations plugin handle models that select from subqueries (jeremyevans)
+
+* Recognize additional disconnect errors in the postgres adapter (jeremyevans)
+
+* Make import/multi_insert insert multiple rows in a single query using a UNION on Oracle, DB2, and Firebird (jeremyevans)
+
+* Speed up association_pks many_to_many setter method by using Dataset#import (jeremyevans)
+
+* Add Model.prepared_finder, similar to .finder but using a prepared statement (jeremyevans)
+
+* Model.def_{add_method,association_dataset_methods,remove_methods} are now deprecated (jeremyevans)
+
+* Model.eager_loading_dataset and Model.apply_association_dataset_opts are now deprecated (jeremyevans)
+
+* Make prepared_statement_associations plugin handle one_through_one and one_through_many associations (jeremyevans)
+
+* Use placeholder literalizer for regular association loading for up to 85% speedup (jeremyevans)
+
+* Use placeholder literalizer for eager association loading for up to 20% speedup (jeremyevans)
+
+* Make Model#marshallable! work correctly when using the tactical_eager_loading plugin (jeremyevans)
+
+* Respect :foreign_key_constraint_name option when adding columns to existing table on MySQL (noah256) (#795)
+
+* AssociationReflection#association_dataset now handles joining tables if necessary (jeremyevans)
+
+* Support drop_view :if_exists option on SQLite, MySQL, H2, and HSQLDB (jeremyevans) (#793)
+
+* Support drop_table :if_exists option on HSQLDB (jeremyevans)
+
+* Add Database#transaction :auto_savepoint option, for automatically using a savepoint in nested transactions (jeremyevans)
+
+* Add :server_version Database option on Microsoft SQL Server, instead of querying the database for it (jeremyevans)
+
+* Support :correlated_subquery as an eager_graph and filter by associations limit strategy for one_to_* associations (jeremyevans)
+
+* Support named paramters in call_mssql_sproc on Microsoft SQL Server (y.zemlyanukhin, jeremyevans) (#792)
+
+* Handle placeholder literalizer arguments when emulating offsets (jeremyevans)
+
+* Don't attempt to emulate offsets if the dataset uses literal SQL (jeremyevans)
+
+* Use a UNION-based strategy by default to eagerly load limited associations (jeremyevans)
+
+* Support offsets without limits on MySQL, SQLite, H2, SQLAnywhere and CUBRID (jeremyevans)
+
+* Remove the install/uninstall rake tasks (jeremyevans)
+
+* Use INSERT VALUES with multiple rows for Dataset#import and #multi_insert on more databases (jeremyevans)
+
+* Support common table expressions (WITH clause) on SQLite >=3.8.3 (jeremyevans)
+
+=== 4.9.0 (2014-04-01)
+
+* Recognize CHECK constraint violations on newer versions of SQLite (jeremyevans)
+
+* Do not attempt to eager load when calling Dataset#columns in the eager_each plugin (jeremyevans)
+
+* Support :driver option for jdbc adapter, for specifying driver class for cases where getConnection doesn't work (jeremyevans) (#785)
+
+* Massive speedup for PostgreSQL array parser (jeremyevans) (#788)
+
+* Add current_datetime_timestamp extension, for current Time/DateTime instances that are literalized as CURRENT_TIMESTAMP (jeremyevans)
+
+* Recognize additional unique constraint violations on SQLite (jeremyevans) (#782)
+
+* Don't remove column value when validating nested attributes for one_to_* association where association foreign key is the model's primary key (jeremyevans)
+
+* Add Dataset#disable_insert_returning on PostgreSQL for skipping implicit use of RETURNING (jeremyevans)
+
+* Automatically optimize Model.[], .with_pk, and .with_pk! for models with composite keys (jeremyevans)
+
+* Automatically optimize Model.[] when called with a hash (jeremyevans)
+
+* Automatically optimize Model.find, .first, and .first! when called with a single argument (jeremyevans)
+
+* Add Model.finder for creating optimized finder methods using Dataset::PlaceholderLiteralizer (jeremyevans)
+
+* Add Dataset::PlaceholderLiteralizer optimization framework (jeremyevans)
+
+* Add Dataset#with_sql_{each,all,first,single_value,insert,update} optimized methods (jeremyevans)
+
+* Make pg_array extension use correct type when typecasting column values for smallint, oid, real, character, and varchar arrays (jeremyevans)
+
+* Make Database#column_schema_to_ruby_default a public method in the schema_dumper extension (jeremyevans) (#776)
+
+* Fix multiple corner cases in the eager_graph support (jeremyevans) (#771)
+
+* Use streaming to implement paging for Dataset#paged_each in the mysql2 adapter (jeremyevans)
+
+* Use a cursor to implement paging for Dataset#paged_each in the postgres adapter (jeremyevans)
+
+* Add Database#create_join_table? and #create_join_table! for consistency (jeremyevans)
+
+* Add Dataset#where_current_of to the postgres adapter for supporting updating rows based on a cursor's current position (jeremyevans)
+
+* Add Dataset#use_cursor :hold option in the postgres adapter for supporting cursor use outside of a transaction (jeremyevans)
+
+* Add Dataset#paged_each :strategy=>:filter option for increased performance (jeremyevans)
+
+=== 4.8.0 (2014-03-01)
+
+* Add SQL::AliasedExpression#alias alias for #aliaz (jeremyevans)
+
+* Handle SQL::Identifier, SQL::QualifiedIdentifier, and SQL::AliasedExpression objects as first argument to Dataset#graph (jeremyevans)
+
+* Respect qualification and aliases in symbols passed as first argument to Dataset#graph (dividedmind) (#769)
+
+* Recognize new constraint violation error messages in SQLite 3.8.2+ (itswindtw) (#766)
+
+* Use limit strategy to correctly handle limited associations in the dataset_associations plugin (jeremyevans)
+
+* Handle issues in dataset_associations plugin when dataset uses unqualified identifiers for associations requiring joins (jeremyevans)
+
+* Handle fractional seconds in input timestamps in the odbc/mssql adapter (Ross Attrill, jeremyevans)
+
+* Return fractional seconds in timestamps in the odbc adapter (jeremyevans)
+
+* Support :plain and :phrase options to Dataset#full_text_search on PostgreSQL (jeremyevans)
+
+* Use limit strategy to correctly handle filtering by limited associations (jeremyevans)
+
+* Simplify queries used for filtering by associations with conditions (jeremyevans)
+
+* Use an eager limit strategy by default for *_one associations with orders (jeremyevans)
+
+* Support :limit_strategy eager_graph option, for specifying strategy used for limited associations in that eager graph (jeremyevans)
+
+* Add eager_graph_with_options to model datasets, for specifying options specific to the eager_graph call (jeremyevans)
+
+* Handle offsets on *_many associations when eager graphing when there are no associated results (jeremyevans)
+
+* Make Database#register_array_type work without existing scalar conversion proc in the pg_array extension (jeremyevans)
+
+* Handle presence validations on foreign keys in associated objects when creating new associated objects in the nested_attributes plugin (jeremyevans)
+
+* Respect offsets when eager graphing *_one associations (jeremyevans)
+
+* Add association_join to model datasets, for setting up joins based on associations (jeremyevans)
+
+* Add one_through_many association to many_through_many plugin, for only returning a single record (jeremyevans)
+
+* Add :graph_order association option, useful when :order needs to contain qualified identifiers (jeremyevans)
+
+* Add one_through_one association, similar to many_to_many but only returning a single record (jeremyevans)
+
+=== 4.7.0 (2014-02-01)
+
+* Don't swallow underlying exception if there is an exception closing the cursor on PostgreSQL (jeremyevans) (#761)
+
+* Recognize primary key unique constraint violations on MSSQL and SQLAnywhere (jeremyevans)
+
+* Recognize composite unique constraint violations on SQLite (timcraft) (#758)
+
+* Make #* method without arguments on SQL::Function return a Function with * prepended to the arguments (jeremyevans)
+
+* Add #function to SQL::Identifier and SQL::QualifiedIdentifier, allowing for easy use of schema qualified functions or functions names that need quoting (jeremyevans)
+
+* Add SQL::Function#distinct for easier creation of aggregate functions using DISTINCT (jeremyevans)
+
+* Add SQL::Function#over for easier creation of window functions (jeremyevans)
+
+* Don't clear validation instance_hooks until after a successful save (jeremyevans)
+
+* Support :raise_on_save_failure option for one_to_many, pg_array_to_many, and many_to_pg_array associations (jeremyevans)
+
+* Make SQLTime#to_s return a string in HH:MM:SS format, since it shouldn't include date information (jeremyevans)
+
+* Support the Database#tables :schema option in the jdbc adapter (robbiegill, jeremyevans) (#755)
+
+* Automatically rollback transactions in killed threads in ruby 2.0+ (chanks) (#752)
+
+* Add update_or_create plugin, for updating an object if it exists, or creating such an object if it does not (jeremyevans)
+
+* Make auto_validations uniqueness validations work correctly for STI subclasses (jeremyevans)
+
+* Support :dataset option to validates_unique vaildation (jeremyevans)
+
+=== 4.6.0 (2014-01-02)
+
+* Add Database#call_mssql_sproc on MSSQL for calling stored procedures and handling output parameters (jrgns, jeremyevans) (#748)
+
+* Handle RuntimeErrors raised by oci8 in the oracle adapter (jeremyevans)
+
+* Support OFFSET/FETCH on Microsoft SQL Server 2012 (jeremyevans)
+
+* Support :server option for Database#{commit,rollback}_prepared_transaction on PostgreSQL, MySQL, and H2 (jeremyevans) (#743)
+
+* Do not attempt to eager load and raise an exception when doing Model.eager(...).naked.all (jeremyevans)
+
+* Recognize a couple additional disconnect errors in the jdbc/postgresql adapter (jeremyevans) (#742)
+
+=== 4.5.0 (2013-12-02)
+
+* Support :on_commit=>(:drop|:delete_rows|:preserve_rows) options when creating temp tables on PostgreSQL (rosenfeld) (#737)
+
+* Make Dataset#insert work on PostgreSQL if the table name is a SQL::PlaceholderLiteralString (jeremyevans) (#736)
+
+* Copy unique constraints when emulating alter_table operations on SQLite (jeremyevans) (#735)
+
+* Don't return clob column values as SQL::Blob instances in the db2 and ibmdb adapters unless use_clob_as_blob is true (jeremyevans)
+
+* Make use_clob_as_blob false by default on DB2 (jeremyevans)
+
+* Fix usage of Sequel::SQL::Blob objects as prepared statement arguments in jdbc/db2 adapter when use_clob_as_blob is false (jeremyevans)
+
+* Add mssql_optimistic_locking plugin, using a timestamp/rowversion column to protect against concurrent updates (pinx, jeremyevans) (#731)
+
+* Make Model.primary_key array immutable for composite keys (chanks) (#730)
+
 === 4.4.0 (2013-11-01)
 
 * Make Database#tables not show tables in the recycle bin on Oracle (jeremyevans) (#728)
@@ -3140,7 +3376,7 @@
 
 * Optimize Model.[] by using static sql when possible, for a 30-40% speed increase (jeremyevans)
 
-* Add Dataset#with_sql, which returns a clone of the datatset with static SQL (jeremyevans)
+* Add Dataset#with_sql, which returns a clone of the dataset with static SQL (jeremyevans)
 
 * Refactor Dataset#literal so it doesn't need to be overridden in subadapters, for a 20-25% performance increase (jeremyevans)
 

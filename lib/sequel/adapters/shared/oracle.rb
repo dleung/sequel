@@ -247,50 +247,38 @@ module Sequel
     end
 
     module DatasetMethods
-      SELECT_CLAUSE_METHODS = Dataset.clause_methods(:select, %w'with select distinct columns from join where group having compounds order lock')
       ROW_NUMBER_EXPRESSION = LiteralString.new('ROWNUM').freeze
       SPACE = Dataset::SPACE
       APOS = Dataset::APOS
       APOS_RE = Dataset::APOS_RE
       DOUBLE_APOS = Dataset::DOUBLE_APOS
       FROM = Dataset::FROM
-      BITCOMP_OPEN = "((0 - ".freeze
-      BITCOMP_CLOSE = ") - 1)".freeze
       TIMESTAMP_FORMAT = "TIMESTAMP '%Y-%m-%d %H:%M:%S%N %z'".freeze
       TIMESTAMP_OFFSET_FORMAT = "%+03i:%02i".freeze
       BOOL_FALSE = "'N'".freeze
       BOOL_TRUE = "'Y'".freeze
       HSTAR = "H*".freeze
-      DUAL = ['DUAL'.freeze].freeze
+      DUAL = ' FROM DUAL'.freeze
+      BITAND_PROC = lambda{|a, b| Sequel.lit(["CAST(BITAND(", ", ", ") AS INTEGER)"], a, b)}
+
+      include(Module.new do
+        Dataset.def_sql_method(self, :select, %w'with select distinct columns from join where group having compounds order lock')
+      end)
 
       def complex_expression_sql_append(sql, op, args)
         case op
         when :&
-          sql << complex_expression_arg_pairs(args){|a, b| "CAST(BITAND(#{literal(a)}, #{literal(b)}) AS INTEGER)"}
+          complex_expression_arg_pairs_append(sql, args, &BITAND_PROC)
         when :|
-          sql << complex_expression_arg_pairs(args) do |a, b|
-            s1 = ''
-            complex_expression_sql_append(s1, :&, [a, b])
-            "(#{literal(a)} - #{s1} + #{literal(b)})"
-          end
+          complex_expression_arg_pairs_append(sql, args){|a, b| Sequel.lit(["(", " - ", " + ", ")"], a, complex_expression_arg_pairs([a, b], &BITAND_PROC), b)}
         when :^
-          sql << complex_expression_arg_pairs(args) do |*x|
-            s1 = ''
-            s2 = ''
-            complex_expression_sql_append(s1, :|, x)
-            complex_expression_sql_append(s2, :&, x)
-            "(#{s1} - #{s2})"
+          complex_expression_arg_pairs_append(sql, args) do |*x|
+            s1 = complex_expression_arg_pairs(x){|a, b| Sequel.lit(["(", " - ", " + ", ")"], a, complex_expression_arg_pairs([a, b], &BITAND_PROC), b)}
+            s2 = complex_expression_arg_pairs(x, &BITAND_PROC)
+            Sequel.lit(["(", " - ", ")"], s1, s2)
           end
-        when :'B~'
-          sql << BITCOMP_OPEN
-          literal_append(sql, args.at(0))
-          sql << BITCOMP_CLOSE
-        when :<<
-          sql << complex_expression_arg_pairs(args){|a, b| "(#{literal(a)} * power(2, #{literal(b)}))"}
-        when :>>
-          sql << complex_expression_arg_pairs(args){|a, b| "(#{literal(a)} / power(2, #{literal(b)}))"}
-        when :%
-          sql << complex_expression_arg_pairs(args){|a, b| "MOD(#{literal(a)}, #{literal(b)})"}
+        when :%, :<<, :>>, :'B~'
+          complex_expression_emulate_append(sql, op, args)
         else
           super
         end
@@ -349,7 +337,7 @@ module Sequel
       def select_sql
         return super if @opts[:sql]
         if o = @opts[:offset]
-          columns = clone(:append_sql=>'').columns
+          columns = clone(:append_sql=>'', :placeholder_literal_null=>true).columns
           dsa1 = dataset_alias(1)
           rn = row_number_column
           limit = @opts[:limit]
@@ -381,6 +369,10 @@ module Sequel
         true
       end
 
+      def supports_cte?(type=:select)
+        type == :select
+      end
+
       # Oracle supports GROUP BY CUBE
       def supports_group_cube?
         true
@@ -401,6 +393,16 @@ module Sequel
         false
       end
       
+      # Oracle does not support limits in correlated subqueries.
+      def supports_limits_in_correlated_subqueries?
+        false
+      end
+    
+      # Oracle does not support offsets in correlated subqueries.
+      def supports_offsets_in_correlated_subqueries?
+        false
+      end
+
       # Oracle does not support SELECT *, column
       def supports_select_all_and_column?
         false
@@ -433,6 +435,10 @@ module Sequel
       # The strftime format to use when literalizing the time.
       def default_timestamp_format
         TIMESTAMP_FORMAT
+      end
+
+      def empty_from_sql
+        DUAL
       end
 
       # If this dataset is associated with a sequence, return the most recently
@@ -472,18 +478,14 @@ module Sequel
         BOOL_TRUE
       end
 
-      # Use the Oracle-specific SQL clauses (no limit, since it is emulated).
-      def select_clause_methods
-        SELECT_CLAUSE_METHODS
+      # Oracle can insert multiple rows using a UNION
+      def multi_insert_sql_strategy
+        :union
       end
 
-      # Modify the SQL to add the list of tables to select FROM
-      # Oracle doesn't support select without FROM clause
-      # so add the dummy DUAL table if the dataset doesn't select
-      # from a table.
-      def select_from_sql(sql)
-        sql << FROM
-        source_list_append(sql, @opts[:from] || DUAL)
+      # Oracle supports quoted function names.
+      def supports_quoted_function_names?
+        true
       end
     end
   end

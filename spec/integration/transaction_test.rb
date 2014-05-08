@@ -23,10 +23,10 @@ describe "Database transactions" do
   end
 
   specify "should have #in_transaction? work correctly" do
-    @db.in_transaction?.should be_false
+    @db.in_transaction?.should == false
     c = nil
     @db.transaction{c = @db.in_transaction?}
-    c.should be_true
+    c.should == true
   end
 
   specify "should correctly rollback transactions" do
@@ -84,7 +84,7 @@ describe "Database transactions" do
   end 
   
   if DB.supports_savepoints?
-    cspecify "should support nested transactions through savepoints using the savepoint option", [:jdbc, :sqlite] do
+    specify "should support nested transactions through savepoints using the savepoint option" do
       @db.transaction do
         @d << {:name => '1'}
         @db.transaction(:savepoint=>true) do
@@ -98,6 +98,30 @@ describe "Database transactions" do
         @db.transaction do
           @d << {:name => '6'}
           @db.transaction(:savepoint=>true) do
+            @d << {:name => '7'}
+            raise Sequel::Rollback
+          end
+        end
+        @d << {:name => '5'}
+      end
+
+      @d.order(:name).map(:name).should == %w{1 4 5 6}
+    end
+
+    specify "should support nested transactions through savepoints using the auto_savepoint option" do
+      @db.transaction(:auto_savepoint=>true) do
+        @d << {:name => '1'}
+        @db.transaction do
+          @d << {:name => '2'}
+          @db.transaction do
+            @d << {:name => '3'}
+            raise Sequel::Rollback
+          end
+        end
+        @d << {:name => '4'}
+        @db.transaction(:auto_savepoint=>true) do
+          @d << {:name => '6'}
+          @db.transaction do
             @d << {:name => '7'}
             raise Sequel::Rollback
           end

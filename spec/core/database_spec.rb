@@ -483,18 +483,18 @@ describe "Database#disconnect_connection" do
     o = Object.new
     def o.close() @closed=true end
     Sequel::Database.new.disconnect_connection(o)
-    o.instance_variable_get(:@closed).should be_true
+    o.instance_variable_get(:@closed).should == true
   end
 end
 
 describe "Database#valid_connection?" do
   specify "should issue a query to validate the connection" do
     db = Sequel.mock
-    db.synchronize{|c| db.valid_connection?(c)}.should be_true
+    db.synchronize{|c| db.valid_connection?(c)}.should == true
     db.synchronize do |c|
       def c.execute(*) raise Sequel::DatabaseError, "error" end
       db.valid_connection?(c)
-    end.should be_false
+    end.should == false
   end
 end
 
@@ -581,7 +581,7 @@ describe "Database#test_connection" do
   end
   
   specify "should return true if successful" do
-    @db.test_connection.should be_true
+    @db.test_connection.should == true
   end
 
   specify "should raise an error if the attempting to connect raises an error" do
@@ -593,10 +593,10 @@ end
 describe "Database#table_exists?" do
   specify "should test existence by selecting a row from the table's dataset" do
     db = Sequel.mock(:fetch=>[Sequel::Error, [], [{:a=>1}]])
-    db.table_exists?(:a).should be_false
+    db.table_exists?(:a).should == false
     db.sqls.should == ["SELECT NULL AS nil FROM a LIMIT 1"]
-    db.table_exists?(:b).should be_true
-    db.table_exists?(:c).should be_true
+    db.table_exists?(:b).should == true
+    db.table_exists?(:c).should == true
   end
 end
 
@@ -746,7 +746,7 @@ shared_examples_for "Database#transaction" do
   specify "should have in_transaction? return true if inside a transaction" do
     c = nil
     @db.transaction{c = @db.in_transaction?}
-    c.should be_true
+    c.should == true
   end
   
   specify "should have in_transaction? handle sharding correctly" do
@@ -757,7 +757,7 @@ shared_examples_for "Database#transaction" do
   end
   
   specify "should have in_transaction? return false if not in a transaction" do
-    @db.in_transaction?.should be_false
+    @db.in_transaction?.should == false
   end
   
   specify "should return nil if Sequel::Rollback is called in the transaction" do
@@ -825,7 +825,7 @@ shared_examples_for "Database#transaction" do
     @db.sqls.should == ['BEGIN', 'BEGIN -- test', 'DROP TABLE test;', 'COMMIT -- test', 'COMMIT']
   end
   
-  if (!defined?(RUBY_ENGINE) or RUBY_ENGINE == 'ruby' or RUBY_ENGINE == 'rbx') and RUBY_VERSION < '1.9'
+  if (!defined?(RUBY_ENGINE) or RUBY_ENGINE == 'ruby' or RUBY_ENGINE == 'rbx') and !RUBY_VERSION.start_with?('1.9')
     specify "should handle Thread#kill for transactions inside threads" do
       q = Queue.new
       q1 = Queue.new
@@ -927,7 +927,6 @@ describe "Database#transaction with savepoint support" do
   it_should_behave_like "Database#transaction"
 
   specify "should support after_commit inside savepoints" do
-    meta_def(@db, :supports_savepoints?){true}
     @db.transaction do
       @db.after_commit{@db.execute('foo')}
       @db.transaction(:savepoint=>true){@db.after_commit{@db.execute('bar')}}
@@ -937,7 +936,6 @@ describe "Database#transaction with savepoint support" do
   end
 
   specify "should support after_rollback inside savepoints" do
-    meta_def(@db, :supports_savepoints?){true}
     @db.transaction do
       @db.after_rollback{@db.execute('foo')}
       @db.transaction(:savepoint=>true){@db.after_rollback{@db.execute('bar')}}
@@ -948,14 +946,12 @@ describe "Database#transaction with savepoint support" do
   end
 
   specify "should raise an error if you attempt to use after_commit inside a savepoint in a prepared transaction" do
-    meta_def(@db, :supports_savepoints?){true}
     meta_def(@db, :supports_prepared_transactions?){true}
     proc{@db.transaction(:prepare=>'XYZ'){@db.transaction(:savepoint=>true){@db.after_commit{@db.execute('foo')}}}}.should raise_error(Sequel::Error)
     @db.sqls.should == ['BEGIN', 'SAVEPOINT autopoint_1','ROLLBACK TO SAVEPOINT autopoint_1', 'ROLLBACK']
   end
 
   specify "should raise an error if you attempt to use after_rollback inside a savepoint in a prepared transaction" do
-    meta_def(@db, :supports_savepoints?){true}
     meta_def(@db, :supports_prepared_transactions?){true}
     proc{@db.transaction(:prepare=>'XYZ'){@db.transaction(:savepoint=>true){@db.after_rollback{@db.execute('foo')}}}}.should raise_error(Sequel::Error)
     @db.sqls.should == ['BEGIN', 'SAVEPOINT autopoint_1','ROLLBACK TO SAVEPOINT autopoint_1', 'ROLLBACK']
@@ -1021,6 +1017,25 @@ describe "Database#transaction with savepoints" do
   specify "should use savepoints if given the :savepoint option" do
     @db.transaction{@db.transaction(:savepoint=>true){@db.execute 'DROP TABLE test;'}}
     @db.sqls.should == ['BEGIN', 'SAVEPOINT autopoint_1', 'DROP TABLE test;', 'RELEASE SAVEPOINT autopoint_1', 'COMMIT']
+  end
+  
+  specify "should use savepoints if surrounding transaction uses :auto_savepoint option" do
+    @db.transaction(:auto_savepoint=>true){@db.transaction{@db.execute 'DROP TABLE test;'}}
+    @db.sqls.should == ['BEGIN', 'SAVEPOINT autopoint_1', 'DROP TABLE test;', 'RELEASE SAVEPOINT autopoint_1', 'COMMIT']
+
+    @db.transaction(:auto_savepoint=>true){@db.transaction{@db.transaction{@db.execute 'DROP TABLE test;'}}}
+    @db.sqls.should == ['BEGIN', 'SAVEPOINT autopoint_1', 'DROP TABLE test;', 'RELEASE SAVEPOINT autopoint_1', 'COMMIT']
+
+    @db.transaction(:auto_savepoint=>true){@db.transaction(:auto_savepoint=>true){@db.transaction{@db.execute 'DROP TABLE test;'}}}
+    @db.sqls.should == ['BEGIN', 'SAVEPOINT autopoint_1', 'SAVEPOINT autopoint_2', 'DROP TABLE test;', 'RELEASE SAVEPOINT autopoint_2', 'RELEASE SAVEPOINT autopoint_1', 'COMMIT']
+
+    @db.transaction{@db.transaction(:auto_savepoint=>true, :savepoint=>true){@db.transaction{@db.execute 'DROP TABLE test;'}}}
+    @db.sqls.should == ['BEGIN', 'SAVEPOINT autopoint_1', 'SAVEPOINT autopoint_2', 'DROP TABLE test;', 'RELEASE SAVEPOINT autopoint_2', 'RELEASE SAVEPOINT autopoint_1', 'COMMIT']
+  end
+
+  specify "should not use savepoints if surrounding transaction uses :auto_savepoint and current transaction uses :savepoint=>false option" do
+    @db.transaction(:auto_savepoint=>true){@db.transaction(:savepoint=>false){@db.execute 'DROP TABLE test;'}}
+    @db.sqls.should == ['BEGIN', 'DROP TABLE test;', 'COMMIT']
   end
   
   specify "should not use a savepoint if no transaction is in progress" do
@@ -1741,16 +1756,16 @@ describe "Database#typecast_value" do
   end
 
   specify "should typecast boolean values to true, false, or nil" do
-    @db.typecast_value(:boolean, false).should be_false
-    @db.typecast_value(:boolean, 0).should be_false
-    @db.typecast_value(:boolean, "0").should be_false
-    @db.typecast_value(:boolean, 'f').should be_false
-    @db.typecast_value(:boolean, 'false').should be_false
-    @db.typecast_value(:boolean, true).should be_true
-    @db.typecast_value(:boolean, 1).should be_true
-    @db.typecast_value(:boolean, '1').should be_true
-    @db.typecast_value(:boolean, 't').should be_true
-    @db.typecast_value(:boolean, 'true').should be_true
+    @db.typecast_value(:boolean, false).should == false
+    @db.typecast_value(:boolean, 0).should == false
+    @db.typecast_value(:boolean, "0").should == false
+    @db.typecast_value(:boolean, 'f').should == false
+    @db.typecast_value(:boolean, 'false').should == false
+    @db.typecast_value(:boolean, true).should == true
+    @db.typecast_value(:boolean, 1).should == true
+    @db.typecast_value(:boolean, '1').should == true
+    @db.typecast_value(:boolean, 't').should == true
+    @db.typecast_value(:boolean, 'true').should == true
     @db.typecast_value(:boolean, '').should be_nil
   end
 
@@ -2326,13 +2341,13 @@ describe "Database extensions" do
   specify "should be able to register an extension with a block and have Database#extension call the block" do
     @db.quote_identifiers = false
     Sequel::Database.register_extension(:foo){|db| db.quote_identifiers = true}
-    @db.extension(:foo).quote_identifiers?.should be_true
+    @db.extension(:foo).quote_identifiers?.should == true
   end
 
   specify "should be able to register an extension with a callable and Database#extension call the callable" do
     @db.quote_identifiers = false
     Sequel::Database.register_extension(:foo, proc{|db| db.quote_identifiers = true})
-    @db.extension(:foo).quote_identifiers?.should be_true
+    @db.extension(:foo).quote_identifiers?.should == true
   end
 
   specify "should be able to load multiple extensions in the same call" do
@@ -2341,7 +2356,7 @@ describe "Database extensions" do
     Sequel::Database.register_extension(:foo, proc{|db| db.quote_identifiers = true})
     Sequel::Database.register_extension(:bar, proc{|db| db.identifier_input_method = nil})
     @db.extension(:foo, :bar)
-    @db.quote_identifiers?.should be_true
+    @db.quote_identifiers?.should == true
     @db.identifier_input_method.should be_nil
   end
 
@@ -2432,5 +2447,24 @@ describe "Database#schema_type_class" do
       :blob=>Sequel::SQL::Blob}.each do |sym, klass|
       db.schema_type_class(sym).should == klass
     end
+  end
+end
+
+describe "Database#execute_{dui,ddl,insert}" do
+  before do
+    @db = Sequel::Database.new
+    def @db.execute(sql, opts={})
+      (@sqls ||= []) << sql
+    end
+    def @db.sqls
+      @sqls
+    end
+  end
+
+  specify "should execute the SQL" do
+    @db.execute_dui "DELETE FROM table"
+    @db.execute_ddl "SET foo"
+    @db.execute_insert "INSERT INTO table DEFAULT VALUES"
+    @db.sqls.should == ["DELETE FROM table", "SET foo", "INSERT INTO table DEFAULT VALUES"]
   end
 end

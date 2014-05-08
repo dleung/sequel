@@ -165,11 +165,13 @@ module Sequel
     end
     
     module DatasetMethods
-      SELECT_CLAUSE_METHODS = Sequel::Dataset.clause_methods(:select, %w'select distinct columns from join where group having compounds order limit')
-      LIMIT = Sequel::Dataset::LIMIT
       COMMA = Sequel::Dataset::COMMA
+      LIMIT = Sequel::Dataset::LIMIT
       BOOL_FALSE = '0'.freeze
       BOOL_TRUE = '1'.freeze
+
+      # Hope you don't have more than 2**32 + offset rows in your dataset
+      ONLY_OFFSET = ",4294967295".freeze
 
       def supports_join_using?
         false
@@ -200,22 +202,35 @@ module Sequel
         BOOL_TRUE
       end
      
-      # CUBRID doesn't support CTEs or FOR UPDATE.
-      def select_clause_methods
-        SELECT_CLAUSE_METHODS
+      # CUBRID supports multiple rows in INSERT.
+      def multi_insert_sql_strategy
+        :values
       end
 
       # CUBRID requires a limit to use an offset,
       # and requires a FROM table if a limit is used.
       def select_limit_sql(sql)
-        if @opts[:from] && (l = @opts[:limit])
+        return unless @opts[:from]
+        l = @opts[:limit]
+        o = @opts[:offset]
+        if l || o
           sql << LIMIT
-          if o = @opts[:offset]
+          if o
             literal_append(sql, o)
-            sql << COMMA
+            if l
+              sql << COMMA
+              literal_append(sql, l)
+            else
+              sql << ONLY_OFFSET
+            end
+          else
+            literal_append(sql, l)
           end
-          literal_append(sql, l)
         end
+      end
+
+      # CUBRID doesn't support FOR UPDATE.
+      def select_lock_sql(sql)
       end
     end
   end

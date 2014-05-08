@@ -45,7 +45,15 @@ describe Sequel::Database do
       proc{@db[:test].update(:a=>'1')}.should raise_error(Sequel::UniqueConstraintViolation)
     end
 
-    cspecify "should raise Sequel::CheckConstraintViolation when a check constraint is violated", :mysql, :sqlite, [:db2] do
+    cspecify "should raise Sequel::UniqueConstraintViolation when a unique constraint is violated for composite primary keys", [:jdbc, :sqlite], [:db2] do
+      @db.create_table!(:test){String :a; String :b; primary_key [:a, :b]}
+      @db[:test].insert(:a=>'1', :b=>'2')
+      proc{@db[:test].insert(:a=>'1', :b=>'2')}.should raise_error(Sequel::UniqueConstraintViolation)
+      @db[:test].insert(:a=>'3', :b=>'4')
+      proc{@db[:test].update(:a=>'1', :b=>'2')}.should raise_error(Sequel::UniqueConstraintViolation)
+    end
+
+    cspecify "should raise Sequel::CheckConstraintViolation when a check constraint is violated", :mysql, [:db2], [proc{|db| db.sqlite_version < 30802}, :sqlite] do
       @db.create_table!(:test){String :a; check Sequel.~(:a=>'1')}
       proc{@db[:test].insert('1')}.should raise_error(Sequel::CheckConstraintViolation)
       @db[:test].insert('2')
@@ -78,7 +86,7 @@ describe Sequel::Database do
       @db << "SELECT"
     rescue Sequel::DatabaseError=>e
       if defined?(Java::JavaLang::Exception)
-        (e.wrapped_exception.is_a?(Exception) || e.wrapped_exception.is_a?(Java::JavaLang::Exception)).should be_true
+        (e.wrapped_exception.is_a?(Exception) || e.wrapped_exception.is_a?(Java::JavaLang::Exception)).should == true
       else
         e.wrapped_exception.should be_a_kind_of(Exception)
       end
@@ -98,8 +106,8 @@ describe Sequel::Database do
 
   cspecify "should provide ability to check connections for validity", [:do, :postgres] do
     conn = @db.synchronize{|c| c}
-    @db.valid_connection?(conn).should be_true
+    @db.valid_connection?(conn).should == true
     @db.disconnect
-    @db.valid_connection?(conn).should be_false
+    @db.valid_connection?(conn).should == false
   end
 end

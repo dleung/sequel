@@ -4,7 +4,7 @@ shared_examples_for "one_to_one eager limit strategies" do
   specify "eager loading one_to_one associations should work correctly" do
     Artist.one_to_one :first_album, {:clone=>:first_album}.merge(@els) if @els
     Artist.one_to_one  :last_album, {:clone=>:last_album}.merge(@els) if @els
-    Artist.one_to_one  :second_album, {:clone=>:second_album}.merge(@els) if @els
+    Artist.one_to_one  :second_album, {:clone=>:second_album}.merge(@els) if @els && @els[:eager_limit_strategy] != :distinct_on
     @album.update(:artist => @artist)
     diff_album = @diff_album.call
     ar = @pr.call[1]
@@ -25,6 +25,44 @@ shared_examples_for "one_to_one eager limit strategies" do
 
     same_album = @same_album.call
     a = Artist.eager(:first_album).order(:name).all
+    a.should == [@artist, ar]
+    [@album, same_album].should include(a.first.first_album)
+    a.last.first_album.should == nil
+  end
+end
+
+shared_examples_for "one_to_one eager_graph limit strategies" do
+  specify "eager graphing one_to_one associations should work correctly" do
+    @album.update(:artist => @artist)
+    diff_album = @diff_album.call
+    ar = @pr.call[1]
+    ds = Artist.order(:artists__name)
+    limit_strategy = {:limit_strategy=>@els[:eager_limit_strategy]}
+    
+    a = ds.eager_graph_with_options(:first_album, limit_strategy).all
+    a.should == [@artist, ar]
+    a.first.first_album.should == @album
+    a.last.first_album.should == nil
+    a.first.first_album.values.should == @album.values
+
+    a = ds.eager_graph_with_options(:last_album, limit_strategy).all
+    a = ds.eager_graph(:last_album).all
+    a.should == [@artist, ar]
+    a.first.last_album.should == diff_album
+    a.last.last_album.should == nil
+    a.first.last_album.values.should == diff_album.values
+
+    if @els[:eager_limit_strategy] != :distinct_on && (@els[:eager_limit_strategy] != :correlated_subquery || Album.dataset.supports_offsets_in_correlated_subqueries?) 
+      a = ds.eager_graph_with_options(:second_album, limit_strategy).all
+      a = ds.eager_graph(:second_album).all
+      a.should == [@artist, ar]
+      a.first.second_album.should == diff_album
+      a.last.second_album.should == nil
+      a.first.second_album.values.should == diff_album.values
+    end
+
+    same_album = @same_album.call
+    a = ds.eager_graph_with_options(:first_album, limit_strategy).all
     a.should == [@artist, ar]
     [@album, same_album].should include(a.first.first_album)
     a.last.first_album.should == nil
@@ -61,6 +99,94 @@ shared_examples_for "one_to_many eager limit strategies" do
   end
 end
 
+shared_examples_for "one_to_many eager_graph limit strategies" do
+  specify "should correctly handle limits and offsets when eager graphing one_to_many associations" do
+    @album.update(:artist => @artist)
+    middle_album = @middle_album.call
+    diff_album = @diff_album.call
+    ar = @pr.call[1]
+    ds = Artist.order(:artists__name)
+    limit_strategy = {:limit_strategy=>@els[:eager_limit_strategy]}
+    
+    ars = ds.eager_graph_with_options(:first_two_albums, limit_strategy).all
+    ars.should == [@artist, ar]
+    ars.first.first_two_albums.should == [@album, middle_album]
+    ars.last.first_two_albums.should == []
+    ars.first.first_two_albums.map{|x| x.values}.should == [@album, middle_album].map{|x| x.values}
+
+    if @els[:eager_limit_strategy] != :correlated_subquery || Album.dataset.supports_offsets_in_correlated_subqueries?
+      ars = ds.eager_graph_with_options(:second_two_albums, limit_strategy).all
+      ars.should == [@artist, ar]
+      ars.first.second_two_albums.should == [middle_album, diff_album]
+      ars.last.second_two_albums.should == []
+      ars.first.second_two_albums.map{|x| x.values}.should == [middle_album, diff_album].map{|x| x.values}
+
+      ars = ds.eager_graph_with_options(:not_first_albums, limit_strategy).all
+      ars.should == [@artist, ar]
+      ars.first.not_first_albums.should == [middle_album, diff_album]
+      ars.last.not_first_albums.should == []
+      ars.first.not_first_albums.map{|x| x.values}.should == [middle_album, diff_album].map{|x| x.values}
+    end
+
+    ars = ds.eager_graph_with_options(:last_two_albums, limit_strategy).all
+    ars.should == [@artist, ar]
+    ars.first.last_two_albums.should == [diff_album, middle_album]
+    ars.last.last_two_albums.should == []
+    ars.first.last_two_albums.map{|x| x.values}.should == [diff_album, middle_album].map{|x| x.values}
+  end
+end
+
+shared_examples_for "one_through_one eager limit strategies" do
+  specify "should correctly handle offsets when eager loading one_through_one associations" do
+    Album.one_through_one :first_tag, {:clone=>:first_tag}.merge(@els) if @els
+    Album.one_through_one :second_tag, {:clone=>:second_tag}.merge(@els) if @els && @els[:eager_limit_strategy] != :distinct_on
+    Album.one_through_one :last_tag, {:clone=>:last_tag}.merge(@els) if @els
+    tu, tv = @other_tags.call
+    al = @pr.call.first
+    
+    als = Album.eager(:first_tag, :second_tag, :last_tag).order(:name).all
+    als.should == [@album, al]
+    als.first.first_tag.should == @tag
+    als.first.second_tag.should == tu
+    als.first.last_tag.should == tv
+    als.last.first_tag.should == nil
+    als.last.second_tag.should == nil
+    als.last.last_tag.should == nil
+    
+    # Check that no extra columns got added by the eager loading
+    als.first.first_tag.values.should == @tag.values
+    als.first.second_tag.values.should == tu.values
+    als.first.last_tag.values.should == tv.values
+  end
+end
+
+shared_examples_for "one_through_one eager_graph limit strategies" do
+  specify "should correctly handle offsets when eager graphing one_through_one associations" do
+    tu, tv = @other_tags.call
+    al = @pr.call.first
+    ds = Album.order(:albums__name)
+    limit_strategy = {:limit_strategy=>@els[:eager_limit_strategy]}
+    
+    als = ds.eager_graph_with_options(:first_tag, limit_strategy).all
+    als.should == [@album, al]
+    als.first.first_tag.should == @tag
+    als.last.first_tag.should == nil
+    als.first.first_tag.values.should == @tag.values
+
+    als = ds.eager_graph_with_options(:second_tag, @els[:eager_limit_strategy] != :distinct_on ? limit_strategy : {}).all
+    als.should == [@album, al]
+    als.first.second_tag.should == tu
+    als.last.second_tag.should == nil
+    als.first.second_tag.values.should == tu.values
+
+    als = ds.eager_graph_with_options(:last_tag, limit_strategy).all
+    als.should == [@album, al]
+    als.first.last_tag.should == tv
+    als.last.last_tag.should == nil
+    als.first.last_tag.values.should == tv.values
+  end
+end
+
 shared_examples_for "many_to_many eager limit strategies" do
   specify "should correctly handle limits and offsets when eager loading many_to_many associations" do
     Album.send @many_to_many_method||:many_to_many, :first_two_tags, {:clone=>:first_two_tags}.merge(@els) if @els
@@ -69,6 +195,7 @@ shared_examples_for "many_to_many eager limit strategies" do
     Album.send @many_to_many_method||:many_to_many, :last_two_tags, {:clone=>:last_two_tags}.merge(@els) if @els
     tu, tv = @other_tags.call
     al = @pr.call.first
+    al.add_tag(tu)
     
     als = Album.eager(:first_two_tags, :second_two_tags, :not_first_tags, :last_two_tags).order(:name).all
     als.should == [@album, al]
@@ -76,14 +203,48 @@ shared_examples_for "many_to_many eager limit strategies" do
     als.first.second_two_tags.should == [tu, tv]
     als.first.not_first_tags.should == [tu, tv]
     als.first.last_two_tags.should == [tv, tu]
-    als.last.first_two_tags.should == []
+    als.last.first_two_tags.should == [tu]
     als.last.second_two_tags.should == []
-    als.last.last_two_tags.should == []
+    als.last.last_two_tags.should == [tu]
     
     # Check that no extra columns got added by the eager loading
     als.first.first_two_tags.map{|x| x.values}.should == [@tag, tu].map{|x| x.values}
     als.first.second_two_tags.map{|x| x.values}.should == [tu, tv].map{|x| x.values}
     als.first.not_first_tags.map{|x| x.values}.should == [tu, tv].map{|x| x.values}
+    als.first.last_two_tags.map{|x| x.values}.should == [tv, tu].map{|x| x.values}
+  end
+end
+
+shared_examples_for "many_to_many eager_graph limit strategies" do
+  specify "should correctly handle limits and offsets when eager loading many_to_many associations" do
+    tu, tv = @other_tags.call
+    al = @pr.call.first
+    al.add_tag(tu)
+    ds = Album.order(:albums__name)
+    limit_strategy = {:limit_strategy=>(@els||{})[:eager_limit_strategy]}
+    
+    als = ds.eager_graph_with_options(:first_two_tags, limit_strategy).all
+    als.should == [@album, al]
+    als.first.first_two_tags.should == [@tag, tu]
+    als.last.first_two_tags.should == [tu]
+    als.first.first_two_tags.map{|x| x.values}.should == [@tag, tu].map{|x| x.values}
+
+    als = ds.eager_graph_with_options(:second_two_tags, limit_strategy).all
+    als.should == [@album, al]
+    als.first.second_two_tags.should == [tu, tv]
+    als.last.second_two_tags.should == []
+    als.first.second_two_tags.map{|x| x.values}.should == [tu, tv].map{|x| x.values}
+
+    als = ds.eager_graph_with_options(:not_first_tags, limit_strategy).all
+    als.should == [@album, al]
+    als.first.not_first_tags.should == [tu, tv]
+    als.last.not_first_tags.should == []
+    als.first.not_first_tags.map{|x| x.values}.should == [tu, tv].map{|x| x.values}
+
+    als = ds.eager_graph_with_options(:last_two_tags, limit_strategy).all
+    als.should == [@album, al]
+    als.first.last_two_tags.should == [tv, tu]
+    als.last.last_two_tags.should == [tu]
     als.first.last_two_tags.map{|x| x.values}.should == [tv, tu].map{|x| x.values}
   end
 end
@@ -96,7 +257,9 @@ shared_examples_for "many_through_many eager limit strategies" do
     Artist.many_through_many :last_two_tags, {:clone=>:last_two_tags}.merge(@els) if @els
     @album.update(:artist => @artist)
     tu, tv = @other_tags.call
-    ar = @pr.call[1]
+    al, ar, _ = @pr.call
+    al.update(:artist=>ar)
+    al.add_tag(tu)
     
     ars = Artist.eager(:first_two_tags, :second_two_tags, :not_first_tags, :last_two_tags).order(:name).all
     ars.should == [@artist, ar]
@@ -104,9 +267,10 @@ shared_examples_for "many_through_many eager limit strategies" do
     ars.first.second_two_tags.should == [tu, tv]
     ars.first.not_first_tags.should == [tu, tv]
     ars.first.last_two_tags.should == [tv, tu]
-    ars.last.first_two_tags.should == []
+    ars.last.first_two_tags.should == [tu]
     ars.last.second_two_tags.should == []
-    ars.last.last_two_tags.should == []
+    ars.last.not_first_tags.should == []
+    ars.last.last_two_tags.should == [tu]
     
     # Check that no extra columns got added by the eager loading
     ars.first.first_two_tags.map{|x| x.values}.should == [@tag, tu].map{|x| x.values}
@@ -116,21 +280,206 @@ shared_examples_for "many_through_many eager limit strategies" do
   end
 end
 
+shared_examples_for "many_through_many eager_graph limit strategies" do
+  specify "should correctly handle limits and offsets when eager loading many_through_many associations" do
+    @album.update(:artist => @artist)
+    tu, tv = @other_tags.call
+    al, ar, _ = @pr.call
+    al.update(:artist=>ar)
+    al.add_tag(tu)
+    ds = Artist.order(:artists__name)
+    limit_strategy = {:limit_strategy=>@els[:eager_limit_strategy]}
+    
+    ars = ds.eager_graph_with_options(:first_two_tags, limit_strategy).all
+    ars.should == [@artist, ar]
+    ars.first.first_two_tags.should == [@tag, tu]
+    ars.last.first_two_tags.should == [tu]
+    ars.first.first_two_tags.map{|x| x.values}.should == [@tag, tu].map{|x| x.values}
+
+    ars = ds.eager_graph_with_options(:second_two_tags, limit_strategy).all
+    ars.should == [@artist, ar]
+    ars.first.second_two_tags.should == [tu, tv]
+    ars.last.second_two_tags.should == []
+    ars.first.second_two_tags.map{|x| x.values}.should == [tu, tv].map{|x| x.values}
+
+    ars = ds.eager_graph_with_options(:not_first_tags, limit_strategy).all
+    ars.should == [@artist, ar]
+    ars.first.not_first_tags.should == [tu, tv]
+    ars.last.not_first_tags.should == []
+    ars.first.not_first_tags.map{|x| x.values}.should == [tu, tv].map{|x| x.values}
+
+    ars = ds.eager_graph_with_options(:last_two_tags, limit_strategy).all
+    ars.should == [@artist, ar]
+    ars.first.last_two_tags.should == [tv, tu]
+    ars.last.last_two_tags.should == [tu]
+    ars.first.last_two_tags.map{|x| x.values}.should == [tv, tu].map{|x| x.values}
+  end
+end
+
+shared_examples_for "one_through_many eager limit strategies" do
+  specify "should correctly handle offsets when eager loading one_through_many associations" do
+    Artist.one_through_many :first_tag, {:clone=>:first_tag}.merge(@els) if @els
+    Artist.one_through_many :second_tag, {:clone=>:second_tag}.merge(@els) if @els && @els[:eager_limit_strategy] != :distinct_on
+    Artist.one_through_many :last_tag, {:clone=>:last_tag}.merge(@els) if @els
+    @album.update(:artist => @artist)
+    tu, tv = @other_tags.call
+    al, ar, _ = @pr.call
+    al.update(:artist=>ar)
+    al.add_tag(tu)
+    
+    ars = Artist.eager(:first_tag, :second_tag, :last_tag).order(:name).all
+    ars.should == [@artist, ar]
+    ars.first.first_tag.should == @tag
+    ars.first.second_tag.should == tu
+    ars.first.last_tag.should == tv
+    ars.last.first_tag.should == tu
+    ars.last.second_tag.should == nil
+    ars.last.last_tag.should == tu
+    
+    # Check that no extra columns got added by the eager loading
+    ars.first.first_tag.values.should == @tag.values
+    ars.first.second_tag.values.should == tu.values
+    ars.first.last_tag.values.should == tv.values
+  end
+end
+
+shared_examples_for "one_through_many eager_graph limit strategies" do
+  specify "should correctly handle offsets when eager graphing one_through_many associations" do
+    @album.update(:artist => @artist)
+    tu, tv = @other_tags.call
+    al, ar, _ = @pr.call
+    al.update(:artist=>ar)
+    al.add_tag(tu)
+    ds = Artist.order(:artists__name)
+    limit_strategy = {:limit_strategy=>@els[:eager_limit_strategy]}
+    
+    ars = ds.eager_graph_with_options(:first_tag, limit_strategy).all
+    ars.should == [@artist, ar]
+    ars.first.first_tag.should == @tag
+    ars.last.first_tag.should == tu
+    ars.first.first_tag.values.should == @tag.values
+
+    ars = ds.eager_graph_with_options(:second_tag, @els[:eager_limit_strategy] != :distinct_on ? limit_strategy : {}).all
+    ars.should == [@artist, ar]
+    ars.first.second_tag.should == tu
+    ars.last.second_tag.should == nil
+    ars.first.second_tag.values.should == tu.values
+
+    ars = ds.eager_graph_with_options(:last_tag, limit_strategy).all
+    ars.should == [@artist, ar]
+    ars.first.last_tag.should == tv
+    ars.last.last_tag.should == tu
+    ars.first.last_tag.values.should == tv.values
+  end
+end
+
 shared_examples_for "eager limit strategies" do
   it_should_behave_like "one_to_one eager limit strategies"
   it_should_behave_like "one_to_many eager limit strategies"
   it_should_behave_like "many_to_many eager limit strategies"
+  it_should_behave_like "one_through_one eager limit strategies"
   it_should_behave_like "many_through_many eager limit strategies"
+  it_should_behave_like "one_through_many eager limit strategies"
+end
+
+shared_examples_for "eager_graph limit strategies" do
+  it_should_behave_like "one_to_one eager_graph limit strategies"
+  it_should_behave_like "one_to_many eager_graph limit strategies"
+  it_should_behave_like "many_to_many eager_graph limit strategies"
+  it_should_behave_like "one_through_one eager_graph limit strategies"
+  it_should_behave_like "many_through_many eager_graph limit strategies"
+  it_should_behave_like "one_through_many eager_graph limit strategies"
 end
 
 shared_examples_for "filtering/excluding by associations" do
+  specify "should handle association inner joins" do
+    @Artist.association_join(:albums).all.should == []
+    @Artist.association_join(:first_album).all.should == []
+    @Album.association_join(:artist).all.should == []
+    @Album.association_join(:tags).all.should == []
+    @Album.association_join(:alias_tags).all.should == []
+    @Tag.association_join(:albums).all.should == []
+    unless @no_many_through_many
+      @Artist.association_join(:tags).all.should == []
+      @Artist.association_join(:first_tag).all.should == []
+    end
+
+    @album.update(:artist => @artist)
+    @album.add_tag(@tag)
+    
+    @Artist.association_join(:albums).select_all(:artists).all.should == [@artist]
+    @Artist.association_join(:first_album).select_all(:artists).all.should == [@artist]
+    @Album.association_join(:artist).select_all(:albums).all.should == [@album]
+    @Album.association_join(:tags).select_all(:albums).all.should == [@album]
+    @Album.association_join(:alias_tags).select_all(:albums).all.should == [@album]
+    @Tag.association_join(:albums).select_all(:tags).all.should == [@tag]
+    unless @no_many_through_many
+      @Artist.association_join(:tags).select_all(:artists).all.should == [@artist]
+      @Artist.association_join(:first_tag).select_all(:artists).all.should == [@artist]
+    end
+
+    @Artist.association_join(:albums).select_all(:albums).naked.all.should == [@album.values]
+    @Artist.association_join(:first_album).select_all(:first_album).naked.all.should == [@album.values]
+    @Album.association_join(:artist).select_all(:artist).naked.all.should == [@artist.values]
+    @Album.association_join(:tags).select_all(:tags).naked.all.should == [@tag.values]
+    @Album.association_join(:alias_tags).select_all(:alias_tags).naked.all.should == [@tag.values]
+    @Tag.association_join(:albums).select_all(:albums).naked.all.should == [@album.values]
+    unless @no_many_through_many
+      @Artist.association_join(:tags).select_all(:tags).naked.all.should == [@tag.values]
+      @Artist.association_join(:first_tag).select_all(:first_tag).naked.all.should == [@tag.values]
+    end
+  end
+
+  specify "should handle association left joins" do
+    @Artist.association_left_join(:albums).select_all(:artists).all.should == [@artist]
+    @Artist.association_left_join(:first_album).select_all(:artists).all.should == [@artist]
+    @Album.association_left_join(:artist).select_all(:albums).all.should == [@album]
+    @Album.association_left_join(:tags).select_all(:albums).all.should == [@album]
+    @Album.association_left_join(:alias_tags).select_all(:albums).all.should == [@album]
+    @Tag.association_left_join(:albums).select_all(:tags).all.should == [@tag]
+    unless @no_many_through_many
+      @Artist.association_left_join(:tags).select_all(:artists).all.should == [@artist]
+      @Artist.association_left_join(:first_tag).select_all(:artists).all.should == [@artist]
+    end
+
+    nil_hash = lambda{|obj| [obj.values.keys.inject({}){|h,k| h[k] = nil; h}]}
+    @Artist.association_left_join(:albums).select_all(:albums).naked.all.should == nil_hash[@album]
+    @Artist.association_left_join(:first_album).select_all(:first_album).naked.all.should == nil_hash[@album]
+    @Album.association_left_join(:artist).select_all(:artist).naked.all.should == nil_hash[@artist]
+    @Album.association_left_join(:tags).select_all(:tags).naked.all.should == nil_hash[@tag]
+    @Album.association_left_join(:alias_tags).select_all(:alias_tags).naked.all.should == nil_hash[@tag]
+    @Tag.association_left_join(:albums).select_all(:albums).naked.all.should == nil_hash[@album]
+    unless @no_many_through_many
+      @Artist.association_left_join(:tags).select_all(:tags).naked.all.should == nil_hash[@tag]
+      @Artist.association_left_join(:first_tag).select_all(:first_tag).naked.all.should == nil_hash[@tag]
+    end
+
+    @album.update(:artist => @artist)
+    @album.add_tag(@tag)
+    
+
+    @Artist.association_left_join(:albums).select_all(:albums).naked.all.should == [@album.values]
+    @Artist.association_left_join(:first_album).select_all(:first_album).naked.all.should == [@album.values]
+    @Album.association_left_join(:artist).select_all(:artist).naked.all.should == [@artist.values]
+    @Album.association_left_join(:tags).select_all(:tags).naked.all.should == [@tag.values]
+    @Album.association_left_join(:alias_tags).select_all(:alias_tags).naked.all.should == [@tag.values]
+    @Tag.association_left_join(:albums).select_all(:albums).naked.all.should == [@album.values]
+    unless @no_many_through_many
+      @Artist.association_left_join(:tags).select_all(:tags).naked.all.should == [@tag.values]
+      @Artist.association_left_join(:first_tag).select_all(:first_tag).naked.all.should == [@tag.values]
+    end
+  end
+
   specify "should work correctly when filtering by associations" do
     @album.update(:artist => @artist)
     @album.add_tag(@tag)
     
     @Artist.filter(:albums=>@album).all.should == [@artist]
     @Artist.filter(:first_album=>@album).all.should == [@artist]
-    @Artist.filter(:tags=>@tag).all.should == [@artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Artist.filter(:tags=>@tag).all.should == [@artist]
+      @Artist.filter(:first_tag=>@tag).all.should == [@artist]
+    end
     @Album.filter(:artist=>@artist).all.should == [@album]
     @Album.filter(:tags=>@tag).all.should == [@album]
     @Album.filter(:alias_tags=>@tag).all.should == [@album]
@@ -146,7 +495,10 @@ shared_examples_for "filtering/excluding by associations" do
 
     @Artist.exclude(:albums=>@album).all.should == [artist]
     @Artist.exclude(:first_album=>@album).all.should == [artist]
-    @Artist.exclude(:tags=>@tag).all.should == [artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Artist.exclude(:tags=>@tag).all.should == [artist]
+      @Artist.exclude(:first_tag=>@tag).all.should == [artist]
+    end
     @Album.exclude(:artist=>@artist).all.should == [album]
     @Album.exclude(:tags=>@tag).all.should == [album]
     @Album.exclude(:alias_tags=>@tag).all.should == [album]
@@ -170,11 +522,21 @@ shared_examples_for "filtering/excluding by associations" do
 
     @Album.filter(:t_tags=>@tag).all.should == [@album]
     @Album.filter(:alias_t_tags=>@tag).all.should == [@album]
-    @Artist.filter(:t_tags=>@tag).all.should == [@artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.filter(:t_tag=>@tag).all.should == [@album]
+      @Album.filter(:alias_t_tag=>@tag).all.should == [@album]
+      @Artist.filter(:t_tags=>@tag).all.should == [@artist]
+      @Artist.filter(:t_tag=>@tag).all.should == [@artist]
+    end
     @tag.update(:name=>'Foo')
     @Album.filter(:t_tags=>@tag).all.should == []
     @Album.filter(:alias_t_tags=>@tag).all.should == []
-    @Artist.filter(:t_tags=>@tag).all.should == [] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.filter(:t_tag=>@tag).all.should == []
+      @Album.filter(:alias_t_tag=>@tag).all.should == []
+      @Artist.filter(:t_tags=>@tag).all.should == []
+      @Artist.filter(:t_tag=>@tag).all.should == []
+    end
   end
   
   specify "should work correctly when excluding by associations with conditions" do
@@ -193,11 +555,21 @@ shared_examples_for "filtering/excluding by associations" do
 
     @Album.exclude(:t_tags=>@tag).all.should == []
     @Album.exclude(:alias_t_tags=>@tag).all.should == []
-    @Artist.exclude(:t_tags=>@tag).all.should == [] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.exclude(:t_tag=>@tag).all.should == []
+      @Album.exclude(:alias_t_tag=>@tag).all.should == []
+      @Artist.exclude(:t_tags=>@tag).all.should == []
+      @Artist.exclude(:t_tag=>@tag).all.should == []
+    end
     @tag.update(:name=>'Foo')
     @Album.exclude(:t_tags=>@tag).all.should == [@album]
     @Album.exclude(:alias_t_tags=>@tag).all.should == [@album]
-    @Artist.exclude(:t_tags=>@tag).all.should == [@artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.exclude(:t_tag=>@tag).all.should == [@album]
+      @Album.exclude(:alias_t_tag=>@tag).all.should == [@album]
+      @Artist.exclude(:t_tags=>@tag).all.should == [@artist]
+      @Artist.exclude(:t_tag=>@tag).all.should == [@artist]
+    end
   end
   
   specify "should work correctly when filtering by multiple associations" do
@@ -213,7 +585,10 @@ shared_examples_for "filtering/excluding by associations" do
     @Tag.filter(:albums=>[@album, album]).all.should == [@tag]
     @Album.filter(:artist=>[@artist, artist], :tags=>[@tag, tag]).all.should == [@album]
     @artist.albums_dataset.filter(:tags=>[@tag, tag]).all.should == [@album]
-    @Artist.filter(:tags=>[@tag, tag]).all.should == [@artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Artist.filter(:tags=>[@tag, tag]).all.should == [@artist]
+      @Artist.filter(:first_tag=>[@tag, tag]).all.should == [@artist]
+    end
 
     album.add_tag(tag)
 
@@ -224,7 +599,10 @@ shared_examples_for "filtering/excluding by associations" do
     @Album.filter(:alias_tags=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@album, album]
     @Tag.filter(:albums=>[@album, album]).all.sort_by{|x| x.pk}.should == [@tag, tag]
     @Album.filter(:artist=>[@artist, artist], :tags=>[@tag, tag]).all.should == [@album]
-    @Artist.filter(:tags=>[@tag, tag]).all.should == [@artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Artist.filter(:tags=>[@tag, tag]).all.should == [@artist]
+      @Artist.filter(:first_tag=>[@tag, tag]).all.should == [@artist]
+    end
 
     album.update(:artist => artist)
 
@@ -235,7 +613,10 @@ shared_examples_for "filtering/excluding by associations" do
     @Album.filter(:alias_tags=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@album, album]
     @Tag.filter(:albums=>[@album, album]).all.sort_by{|x| x.pk}.should == [@tag, tag]
     @Album.filter(:artist=>[@artist, artist], :tags=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@album, album]
-    @Artist.filter(:tags=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@artist, artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Artist.filter(:tags=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@artist, artist]
+      @Artist.filter(:first_tag=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@artist, artist]
+    end
   end
 
   specify "should work correctly when excluding by multiple associations" do
@@ -248,7 +629,10 @@ shared_examples_for "filtering/excluding by associations" do
     @Album.exclude(:alias_tags=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@album, album]
     @Tag.exclude(:albums=>[@album, album]).all.sort_by{|x| x.pk}.should == [@tag, tag]
     @Album.exclude(:artist=>[@artist, artist], :tags=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@album, album]
-    @Artist.exclude(:tags=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@artist, artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Artist.exclude(:tags=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@artist, artist]
+      @Artist.exclude(:first_tag=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@artist, artist]
+    end
 
     @album.update(:artist => @artist)
     @album.add_tag(@tag)
@@ -260,7 +644,10 @@ shared_examples_for "filtering/excluding by associations" do
     @Album.exclude(:alias_tags=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [album]
     @Tag.exclude(:albums=>[@album, album]).all.sort_by{|x| x.pk}.should == [tag]
     @Album.exclude(:artist=>[@artist, artist], :tags=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [album]
-    @Artist.exclude(:tags=>[@tag, tag]).all.should == [artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Artist.exclude(:tags=>[@tag, tag]).all.should == [artist]
+      @Artist.exclude(:first_tag=>[@tag, tag]).all.should == [artist]
+    end
 
     album.add_tag(tag)
 
@@ -271,7 +658,10 @@ shared_examples_for "filtering/excluding by associations" do
     @Album.exclude(:alias_tags=>[@tag, tag]).all.should == []
     @Tag.exclude(:albums=>[@album, album]).all.should == []
     @Album.exclude(:artist=>[@artist, artist], :tags=>[@tag, tag]).all.should == [album]
-    @Artist.exclude(:tags=>[@tag, tag]).all.should == [artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Artist.exclude(:tags=>[@tag, tag]).all.should == [artist]
+      @Artist.exclude(:first_tag=>[@tag, tag]).all.should == [artist]
+    end
 
     album.update(:artist => artist)
 
@@ -282,7 +672,10 @@ shared_examples_for "filtering/excluding by associations" do
     @Album.exclude(:alias_tags=>[@tag, tag]).all.should == []
     @Tag.exclude(:albums=>[@album, album]).all.should == []
     @Album.exclude(:artist=>[@artist, artist], :tags=>[@tag, tag]).all.should == []
-    @Artist.exclude(:tags=>[@tag, tag]).all.should == [] unless @no_many_through_many
+    unless @no_many_through_many
+      @Artist.exclude(:tags=>[@tag, tag]).all.should == []
+      @Artist.exclude(:first_tag=>[@tag, tag]).all.should == []
+    end
   end
   
   specify "should work correctly when filtering associations with conditions with multiple objects" do
@@ -315,15 +708,30 @@ shared_examples_for "filtering/excluding by associations" do
 
     @Album.filter(:t_tags=>[@tag, tag]).all.should == [@album]
     @Album.filter(:alias_t_tags=>[@tag, tag]).all.should == [@album]
-    @Artist.filter(:t_tags=>[@tag, tag]).all.should == [artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.filter(:t_tag=>[@tag, tag]).all.should == [@album]
+      @Album.filter(:alias_t_tag=>[@tag, tag]).all.should == [@album]
+      @Artist.filter(:t_tags=>[@tag, tag]).all.should == [artist]
+      @Artist.filter(:t_tag=>[@tag, tag]).all.should == [artist]
+    end
     @tag.update(:name=>'Foo')
     @Album.filter(:t_tags=>[@tag, tag]).all.should == [@album]
     @Album.filter(:alias_t_tags=>[@tag, tag]).all.should == [@album]
-    @Artist.filter(:t_tags=>[@tag, tag]).all.should == [artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.filter(:t_tag=>[@tag, tag]).all.should == [@album]
+      @Album.filter(:alias_t_tag=>[@tag, tag]).all.should == [@album]
+      @Artist.filter(:t_tags=>[@tag, tag]).all.should == [artist]
+      @Artist.filter(:t_tag=>[@tag, tag]).all.should == [artist]
+    end
     tag.update(:name=>'Foo')
     @Album.filter(:t_tags=>[@tag, tag]).all.should == []
     @Album.filter(:alias_t_tags=>[@tag, tag]).all.should == []
-    @Artist.filter(:t_tags=>[@tag, tag]).all.should == [] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.filter(:t_tag=>[@tag, tag]).all.should == []
+      @Album.filter(:alias_t_tag=>[@tag, tag]).all.should == []
+      @Artist.filter(:t_tags=>[@tag, tag]).all.should == []
+      @Artist.filter(:t_tag=>[@tag, tag]).all.should == []
+    end
   end
   
   specify "should work correctly when excluding associations with conditions with multiple objects" do
@@ -357,15 +765,30 @@ shared_examples_for "filtering/excluding by associations" do
     @tag.add_album(album)
     @Album.exclude(:t_tags=>[@tag, tag]).all.should == []
     @Album.exclude(:alias_t_tags=>[@tag, tag]).all.should == []
-    @Artist.exclude(:t_tags=>[@tag, tag]).all.should == [@artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.exclude(:t_tag=>[@tag, tag]).all.should == []
+      @Album.exclude(:alias_t_tag=>[@tag, tag]).all.should == []
+      @Artist.exclude(:t_tags=>[@tag, tag]).all.should == [@artist]
+      @Artist.exclude(:t_tag=>[@tag, tag]).all.should == [@artist]
+    end
     @tag.update(:name=>'Foo')
     @Album.exclude(:t_tags=>[@tag, tag]).all.should == [album]
     @Album.exclude(:alias_t_tags=>[@tag, tag]).all.should == [album]
-    @Artist.exclude(:t_tags=>[@tag, tag]).all.should == [@artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.exclude(:t_tag=>[@tag, tag]).all.should == [album]
+      @Album.exclude(:alias_t_tag=>[@tag, tag]).all.should == [album]
+      @Artist.exclude(:t_tags=>[@tag, tag]).all.should == [@artist]
+      @Artist.exclude(:t_tag=>[@tag, tag]).all.should == [@artist]
+    end
     tag.update(:name=>'Foo')
     @Album.exclude(:t_tags=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@album, album]
     @Album.exclude(:alias_t_tags=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@album, album]
-    @Artist.exclude(:t_tags=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@artist, artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.exclude(:t_tag=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@album, album]
+      @Album.exclude(:alias_t_tag=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@album, album]
+      @Artist.exclude(:t_tags=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@artist, artist]
+      @Artist.exclude(:t_tag=>[@tag, tag]).all.sort_by{|x| x.pk}.should == [@artist, artist]
+    end
   end
   
   specify "should work correctly when excluding by associations in regards to NULL values" do
@@ -382,7 +805,12 @@ shared_examples_for "filtering/excluding by associations" do
     @Album.exclude(:a_artist=>@artist).all.should == [@album]
     @Album.exclude(:t_tags=>@tag).all.should == [@album]
     @Album.exclude(:alias_t_tags=>@tag).all.should == [@album]
-    @Artist.exclude(:t_tags=>@tag).all.should == [@artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.exclude(:t_tag=>@tag).all.should == [@album]
+      @Album.exclude(:alias_t_tag=>@tag).all.should == [@album]
+      @Artist.exclude(:t_tags=>@tag).all.should == [@artist]
+      @Artist.exclude(:t_tag=>@tag).all.should == [@artist]
+    end
 
     @album.update(:artist => @artist)
     @artist.albums_dataset.exclude(:tags=>@tag).all.should == [@album]
@@ -440,6 +868,9 @@ shared_examples_for "filtering/excluding by associations" do
       @Artist.filter(:tags=>@Tag).all.sort_by{|x| x.pk}.should == [@artist, artist]
       @Artist.filter(:tags=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [artist]
       @Artist.filter(:tags=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == []
+      @Artist.filter(:first_tag=>@Tag).all.sort_by{|x| x.pk}.should == [@artist, artist]
+      @Artist.filter(:first_tag=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [artist]
+      @Artist.filter(:first_tag=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == []
     end
   end
 
@@ -473,6 +904,9 @@ shared_examples_for "filtering/excluding by associations" do
       @Artist.exclude(:tags=>@Tag).all.sort_by{|x| x.pk}.should == []
       @Artist.exclude(:tags=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [@artist]
       @Artist.exclude(:tags=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == [@artist, artist]
+      @Artist.exclude(:first_tag=>@Tag).all.sort_by{|x| x.pk}.should == []
+      @Artist.exclude(:first_tag=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [@artist]
+      @Artist.exclude(:first_tag=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == [@artist, artist]
     end
   end
 
@@ -488,7 +922,12 @@ shared_examples_for "filtering/excluding by associations" do
     @Album.filter(:a_artist=>@Artist).all.sort_by{|x| x.pk}.should == [@album]
     @Album.filter(:t_tags=>@Tag).all.sort_by{|x| x.pk}.should == [@album]
     @Album.filter(:alias_t_tags=>@Tag).all.sort_by{|x| x.pk}.should == [@album]
-    @Artist.filter(:t_tags=>@Tag).all.sort_by{|x| x.pk}.should == [@artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.filter(:t_tag=>@Tag).all.sort_by{|x| x.pk}.should == [@album]
+      @Album.filter(:alias_t_tag=>@Tag).all.sort_by{|x| x.pk}.should == [@album]
+      @Artist.filter(:t_tags=>@Tag).all.sort_by{|x| x.pk}.should == [@artist]
+      @Artist.filter(:t_tag=>@Tag).all.sort_by{|x| x.pk}.should == [@artist]
+    end
 
     artist.update(:name=>@artist.name)
     album.update(:name=>@album.name)
@@ -499,14 +938,24 @@ shared_examples_for "filtering/excluding by associations" do
     @Album.filter(:a_artist=>@Artist).all.sort_by{|x| x.pk}.should == [@album, album]
     @Album.filter(:t_tags=>@Tag).all.sort_by{|x| x.pk}.should == [@album, album]
     @Album.filter(:alias_t_tags=>@Tag).all.sort_by{|x| x.pk}.should == [@album, album]
-    @Artist.filter(:t_tags=>@Tag).all.sort_by{|x| x.pk}.should == [@artist, artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.filter(:t_tag=>@Tag).all.sort_by{|x| x.pk}.should == [@album, album]
+      @Album.filter(:alias_t_tag=>@Tag).all.sort_by{|x| x.pk}.should == [@album, album]
+      @Artist.filter(:t_tags=>@Tag).all.sort_by{|x| x.pk}.should == [@artist, artist]
+      @Artist.filter(:t_tag=>@Tag).all.sort_by{|x| x.pk}.should == [@artist, artist]
+    end
 
     @Artist.filter(:a_albums=>@Album.filter(Array(Album.primary_key).map{|k| Sequel.qualify(Album.table_name, k)}.zip(Array(album.pk)))).all.sort_by{|x| x.pk}.should == [artist]
     @Artist.filter(:first_a_album=>@Album.filter(Array(Album.primary_key).map{|k| Sequel.qualify(Album.table_name, k)}.zip(Array(album.pk)))).all.sort_by{|x| x.pk}.should == [artist]
     @Album.filter(:a_artist=>@Artist.filter(Array(Artist.primary_key).map{|k| Sequel.qualify(Artist.table_name, k)}.zip(Array(artist.pk)))).all.sort_by{|x| x.pk}.should == [album]
     @Album.filter(:t_tags=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [album]
     @Album.filter(:alias_t_tags=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [album]
-    @Artist.filter(:t_tags=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.filter(:t_tag=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [album]
+      @Album.filter(:alias_t_tag=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [album]
+      @Artist.filter(:t_tags=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [artist]
+      @Artist.filter(:t_tag=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [artist]
+    end
 
     @Artist.filter(:a_albums=>@Album.filter(1=>0)).all.sort_by{|x| x.pk}.should == []
     @Artist.filter(:first_a_album=>@Album.filter(1=>0)).all.sort_by{|x| x.pk}.should == []
@@ -514,7 +963,13 @@ shared_examples_for "filtering/excluding by associations" do
     @Album.filter(:t_tags=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [album]
     @Album.filter(:t_tags=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == []
     @Album.filter(:alias_t_tags=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == []
-    @Artist.filter(:t_tags=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == [] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.filter(:t_tag=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [album]
+      @Album.filter(:t_tag=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == []
+      @Album.filter(:alias_t_tag=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == []
+      @Artist.filter(:t_tags=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == []
+      @Artist.filter(:t_tag=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == []
+    end
   end
 
   specify "should work correctly when excluding by association datasets with conditions" do
@@ -529,7 +984,12 @@ shared_examples_for "filtering/excluding by associations" do
     @Album.exclude(:a_artist=>@Artist).all.sort_by{|x| x.pk}.should == [album]
     @Album.exclude(:t_tags=>@Tag).all.sort_by{|x| x.pk}.should == [album]
     @Album.exclude(:alias_t_tags=>@Tag).all.sort_by{|x| x.pk}.should == [album]
-    @Artist.exclude(:t_tags=>@Tag).all.sort_by{|x| x.pk}.should == [artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.exclude(:t_tag=>@Tag).all.sort_by{|x| x.pk}.should == [album]
+      @Album.exclude(:alias_t_tag=>@Tag).all.sort_by{|x| x.pk}.should == [album]
+      @Artist.exclude(:t_tags=>@Tag).all.sort_by{|x| x.pk}.should == [artist]
+      @Artist.exclude(:t_tag=>@Tag).all.sort_by{|x| x.pk}.should == [artist]
+    end
 
     artist.update(:name=>@artist.name)
     album.update(:name=>@album.name)
@@ -540,23 +1000,487 @@ shared_examples_for "filtering/excluding by associations" do
     @Album.exclude(:a_artist=>@Artist).all.sort_by{|x| x.pk}.should == []
     @Album.exclude(:t_tags=>@Tag).all.sort_by{|x| x.pk}.should == []
     @Album.exclude(:alias_t_tags=>@Tag).all.sort_by{|x| x.pk}.should == []
-    @Artist.exclude(:t_tags=>@Tag).all.sort_by{|x| x.pk}.should == [] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.exclude(:t_tag=>@Tag).all.sort_by{|x| x.pk}.should == []
+      @Album.exclude(:alias_t_tag=>@Tag).all.sort_by{|x| x.pk}.should == []
+      @Artist.exclude(:t_tags=>@Tag).all.sort_by{|x| x.pk}.should == []
+      @Artist.exclude(:t_tag=>@Tag).all.sort_by{|x| x.pk}.should == []
+    end
 
     @Artist.exclude(:a_albums=>@Album.filter(Array(Album.primary_key).map{|k| Sequel.qualify(Album.table_name, k)}.zip(Array(album.pk)))).all.sort_by{|x| x.pk}.should == [@artist]
     @Artist.exclude(:first_a_album=>@Album.filter(Array(Album.primary_key).map{|k| Sequel.qualify(Album.table_name, k)}.zip(Array(album.pk)))).all.sort_by{|x| x.pk}.should == [@artist]
     @Album.exclude(:a_artist=>@Artist.filter(Array(Artist.primary_key).map{|k| Sequel.qualify(Artist.table_name, k)}.zip(Array(artist.pk)))).all.sort_by{|x| x.pk}.should == [@album]
     @Album.exclude(:t_tags=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [@album]
     @Album.exclude(:alias_t_tags=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [@album]
-    @Artist.exclude(:t_tags=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [@artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.exclude(:t_tag=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [@album]
+      @Album.exclude(:alias_t_tag=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [@album]
+      @Artist.exclude(:t_tags=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [@artist]
+      @Artist.exclude(:t_tag=>@Tag.filter(Array(Tag.primary_key).map{|k| Sequel.qualify(Tag.table_name, k)}.zip(Array(tag.pk)))).all.sort_by{|x| x.pk}.should == [@artist]
+    end
 
     @Artist.exclude(:a_albums=>@Album.filter(1=>0)).all.sort_by{|x| x.pk}.should == [@artist, artist]
     @Artist.exclude(:first_a_album=>@Album.filter(1=>0)).all.sort_by{|x| x.pk}.should == [@artist, artist]
     @Album.exclude(:a_artist=>@Artist.filter(1=>0)).all.sort_by{|x| x.pk}.should == [@album, album]
     @Album.exclude(:t_tags=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == [@album, album]
     @Album.exclude(:alias_t_tags=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == [@album, album]
-    @Artist.exclude(:t_tags=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == [@artist, artist] unless @no_many_through_many
+    unless @no_many_through_many
+      @Album.exclude(:t_tag=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == [@album, album]
+      @Album.exclude(:alias_t_tag=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == [@album, album]
+      @Artist.exclude(:t_tags=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == [@artist, artist]
+      @Artist.exclude(:t_tag=>@Tag.filter(1=>0)).all.sort_by{|x| x.pk}.should == [@artist, artist]
+    end
+  end
+end
+
+shared_examples_for "filter by associations one_to_one limit strategies" do
+  specify "filter by associations with limited one_to_one associations should work correctly" do
+    Artist.one_to_one :first_album, {:clone=>:first_album}.merge(@els)
+    Artist.one_to_one :last_album, {:clone=>:last_album}.merge(@els)
+    Artist.one_to_one :second_album, {:clone=>:second_album}.merge(@els)
+    @album.update(:artist => @artist)
+    diff_album = @diff_album.call
+    ar = @pr.call[1]
+    ds = Artist.order(:name)
+    
+    ds.where(:first_album=>@album).all.should == [@artist]
+    ds.where(:first_album=>diff_album).all.should == []
+    ds.exclude(:first_album=>@album).all.should == [ar]
+    ds.exclude(:first_album=>diff_album).all.should == [@artist, ar]
+
+    if @els[:eager_limit_strategy] != :distinct_on && (@els[:eager_limit_strategy] != :correlated_subquery || Album.dataset.supports_offsets_in_correlated_subqueries?) 
+      ds.where(:second_album=>@album).all.should == []
+      ds.where(:second_album=>diff_album).all.should == [@artist]
+      ds.exclude(:second_album=>@album).all.should == [@artist, ar]
+      ds.exclude(:second_album=>diff_album).all.should == [ar]
+    end
+
+    ds.where(:last_album=>@album).all.should == []
+    ds.where(:last_album=>diff_album).all.should == [@artist]
+    ds.exclude(:last_album=>@album).all.should == [@artist, ar]
+    ds.exclude(:last_album=>diff_album).all.should == [ar]
+
+    Artist.one_to_one :first_album, :clone=>:first_album do |ads| ads.where(:albums__name=>diff_album.name) end
+    ar.add_album(diff_album)
+    ds.where(:first_album=>[@album, diff_album]).all.should == [ar]
+    ds.exclude(:first_album=>[@album, diff_album]).all.should == [@artist]
+  end
+end
+
+shared_examples_for "filter by associations singular association limit strategies" do
+  it_should_behave_like "filter by associations one_to_one limit strategies"
+
+  specify "dataset associations with limited one_to_one associations should work correctly" do
+    Artist.one_to_one :first_album, {:clone=>:first_album}.merge(@els)
+    Artist.one_to_one :last_album, {:clone=>:last_album}.merge(@els)
+    Artist.one_to_one :second_album, {:clone=>:second_album}.merge(@els) if @els[:eager_limit_strategy] != :distinct_on
+    @album.update(:artist => @artist)
+    diff_album = @diff_album.call
+    ar = @pr.call[1]
+    ds = Artist
+    
+    ds.where(@artist.pk_hash).first_albums.all.should == [@album]
+    ds.where(@artist.pk_hash).second_albums.all.should == [diff_album]
+    ds.where(@artist.pk_hash).last_albums.all.should == [diff_album]
+    ds.where(ar.pk_hash).first_albums.all.should == []
+    ds.where(ar.pk_hash).second_albums.all.should == []
+    ds.where(ar.pk_hash).last_albums.all.should == []
+
+    Artist.one_to_one :first_album, :clone=>:first_album do |ads| ads.where(:albums__name=>diff_album.name) end
+    ar.add_album(diff_album)
+    ds.where(@artist.pk_hash).first_albums.all.should == []
+    ds.where(ar.pk_hash).first_albums.all.should == [diff_album]
   end
 
+  specify "filter by associations with limited one_through_one associations should work correctly" do
+    Album.one_through_one :first_tag, {:clone=>:first_tag}.merge(@els)
+    Album.one_through_one :second_tag, {:clone=>:second_tag}.merge(@els) if @els[:eager_limit_strategy] != :distinct_on
+    Album.one_through_one :last_tag, {:clone=>:last_tag}.merge(@els)
+    tu, tv = @other_tags.call
+    al = @pr.call.first
+    ds = Album.order(:name)
+    al.add_tag(tu)
+    
+    ds.where(:first_tag=>@tag).all.should == [@album]
+    ds.where(:first_tag=>tu).all.should == [al]
+    ds.where(:first_tag=>tv).all.should == []
+    ds.exclude(:first_tag=>@tag).all.should == [al]
+    ds.exclude(:first_tag=>tu).all.should == [@album]
+    ds.exclude(:first_tag=>tv).all.should == [@album, al]
+
+    ds.where(:second_tag=>@tag).all.should == []
+    ds.where(:second_tag=>tu).all.should == [@album]
+    ds.where(:second_tag=>tv).all.should == []
+    ds.exclude(:second_tag=>@tag).all.should == [@album, al]
+    ds.exclude(:second_tag=>tu).all.should == [al]
+    ds.exclude(:second_tag=>tv).all.should == [@album, al]
+
+    ds.where(:last_tag=>@tag).all.should == []
+    ds.where(:last_tag=>tu).all.should == [al]
+    ds.where(:last_tag=>tv).all.should == [@album]
+    ds.exclude(:last_tag=>@tag).all.should == [@album, al]
+    ds.exclude(:last_tag=>tu).all.should == [@album]
+    ds.exclude(:last_tag=>tv).all.should == [al]
+
+    Album.one_through_one :first_tag, :clone=>:first_tag do |ads| ads.where(:tags__name=>tu.name) end
+    Album.one_through_one :second_tag, :clone=>:second_tag do |ads| ads.where(:tags__name=>[tu.name, tv.name]) end
+
+    ds.where(:first_tag=>[@tag, tu]).all.should == [@album, al]
+    ds.exclude(:first_tag=>[@tag, tu]).all.should == []
+
+    al.add_tag(tv)
+    ds.where(:second_tag=>[tv, tu]).all.should == [@album, al]
+    ds.exclude(:second_tag=>[tv, tu]).all.should == []
+  end
+
+  specify "dataset associations with limited one_through_one associations should work correctly" do
+    Album.one_through_one :first_tag, {:clone=>:first_tag}.merge(@els)
+    Album.one_through_one :second_tag, {:clone=>:second_tag}.merge(@els) if @els[:eager_limit_strategy] != :distinct_on
+    Album.one_through_one :last_tag, {:clone=>:last_tag}.merge(@els)
+    tu, tv = @other_tags.call
+    al = @pr.call.first
+    ds = Album
+    al.add_tag(tu)
+    
+    ds.where(@album.pk_hash).first_tags.all.should == [@tag]
+    ds.where(@album.pk_hash).second_tags.all.should == [tu]
+    ds.where(@album.pk_hash).last_tags.all.should == [tv]
+    ds.where(al.pk_hash).first_tags.all.should == [tu]
+    ds.where(al.pk_hash).second_tags.all.should == []
+    ds.where(al.pk_hash).last_tags.all.should == [tu]
+
+    Album.one_through_one :first_tag, :clone=>:first_tag do |ads| ads.where(:tags__name=>tu.name) end
+    Album.one_through_one :second_tag, :clone=>:second_tag do |ads| ads.where(:tags__name=>[tu.name, tv.name]) end
+
+    ds.where(@album.pk_hash).first_tags.all.should == [tu]
+    ds.where(@album.pk_hash).second_tags.all.should == [tv]
+    ds.where(al.pk_hash).first_tags.all.should == [tu]
+    ds.where(al.pk_hash).second_tags.all.should == []
+
+    al.add_tag(tv)
+    ds.where(@album.pk_hash).first_tags.all.should == [tu]
+    ds.where(@album.pk_hash).second_tags.all.should == [tv]
+    ds.where(al.pk_hash).first_tags.all.should == [tu]
+    ds.where(al.pk_hash).second_tags.all.should == [tv]
+  end
+
+  specify "filter by associations with limited one_through_many associations should work correctly" do
+    Artist.one_through_many :first_tag, {:clone=>:first_tag}.merge(@els)
+    Artist.one_through_many :second_tag, {:clone=>:second_tag}.merge(@els) if @els[:eager_limit_strategy] != :distinct_on
+    Artist.one_through_many :last_tag, {:clone=>:last_tag}.merge(@els)
+    @album.update(:artist => @artist)
+    tu, tv = @other_tags.call
+    al, ar, _ = @pr.call
+    al.update(:artist=>ar)
+    al.add_tag(tu)
+    ds = Artist.order(:name)
+
+    ds.where(:first_tag=>@tag).all.should == [@artist]
+    ds.where(:first_tag=>tu).all.should == [ar]
+    ds.where(:first_tag=>tv).all.should == []
+    ds.exclude(:first_tag=>@tag).all.should == [ar]
+    ds.exclude(:first_tag=>tu).all.should == [@artist]
+    ds.exclude(:first_tag=>tv).all.should == [@artist, ar]
+
+    ds.where(:second_tag=>@tag).all.should == []
+    ds.where(:second_tag=>tu).all.should == [@artist]
+    ds.where(:second_tag=>tv).all.should == []
+    ds.exclude(:second_tag=>@tag).all.should == [@artist, ar]
+    ds.exclude(:second_tag=>tu).all.should == [ar]
+    ds.exclude(:second_tag=>tv).all.should == [@artist, ar]
+
+    ds.where(:last_tag=>@tag).all.should == []
+    ds.where(:last_tag=>tu).all.should == [ar]
+    ds.where(:last_tag=>tv).all.should == [@artist]
+    ds.exclude(:last_tag=>@tag).all.should == [@artist, ar]
+    ds.exclude(:last_tag=>tu).all.should == [@artist]
+    ds.exclude(:last_tag=>tv).all.should == [ar]
+
+    Artist.one_through_many :first_tag, :clone=>:first_tag do |ads| ads.where(:tags__name=>tu.name) end
+    Artist.one_through_many :second_tag, :clone=>:second_tag do |ads| ads.where(:tags__name=>[tu.name, tv.name]) end
+
+    ds.where(:first_tag=>[@tag, tu]).all.should == [@artist, ar]
+    ds.exclude(:first_tag=>[@tag, tu]).all.should == []
+
+    al.add_tag(tv)
+    ds.where(:second_tag=>[tv, tu]).all.should == [@artist, ar]
+    ds.exclude(:second_tag=>[tv, tu]).all.should == []
+  end
+
+  specify "dataset associations with limited one_through_many associations should work correctly" do
+    Artist.one_through_many :first_tag, {:clone=>:first_tag}.merge(@els)
+    Artist.one_through_many :second_tag, {:clone=>:second_tag}.merge(@els) if @els[:eager_limit_strategy] != :distinct_on
+    Artist.one_through_many :last_tag, {:clone=>:last_tag}.merge(@els)
+    @album.update(:artist => @artist)
+    tu, tv = @other_tags.call
+    al, ar, _ = @pr.call
+    al.update(:artist=>ar)
+    al.add_tag(tu)
+    ds = Artist.order(:name)
+
+    ds.where(@artist.pk_hash).first_tags.all.should == [@tag]
+    ds.where(@artist.pk_hash).second_tags.all.should == [tu]
+    ds.where(@artist.pk_hash).last_tags.all.should == [tv]
+    ds.where(ar.pk_hash).first_tags.all.should == [tu]
+    ds.where(ar.pk_hash).second_tags.all.should == []
+    ds.where(ar.pk_hash).last_tags.all.should == [tu]
+
+    Artist.one_through_many :first_tag, :clone=>:first_tag do |ads| ads.where(:tags__name=>tu.name) end
+    Artist.one_through_many :second_tag, :clone=>:second_tag do |ads| ads.where(:tags__name=>[tu.name, tv.name]) end
+
+    ds.where(@artist.pk_hash).first_tags.all.should == [tu]
+    ds.where(@artist.pk_hash).second_tags.all.should == [tv]
+    ds.where(ar.pk_hash).first_tags.all.should == [tu]
+    ds.where(ar.pk_hash).second_tags.all.should == []
+
+    al.add_tag(tv)
+    ds.where(@artist.pk_hash).first_tags.all.should == [tu]
+    ds.where(@artist.pk_hash).second_tags.all.should == [tv]
+    ds.where(ar.pk_hash).first_tags.all.should == [tu]
+    ds.where(ar.pk_hash).second_tags.all.should == [tv]
+  end
+end
+
+shared_examples_for "filter by associations one_to_many limit strategies" do
+  specify "filter by associations with limited one_to_many associations should work correctly" do
+    Artist.one_to_many :first_two_albums, {:clone=>:first_two_albums}.merge(@els)
+    Artist.one_to_many :second_two_albums, {:clone=>:second_two_albums}.merge(@els)
+    Artist.one_to_many :not_first_albums, {:clone=>:not_first_albums}.merge(@els)
+    Artist.one_to_many :last_two_albums, {:clone=>:last_two_albums}.merge(@els)
+    @album.update(:artist => @artist)
+    middle_album = @middle_album.call
+    diff_album = @diff_album.call
+    ar = @pr.call[1]
+    ds = Artist.order(:name)
+
+    ds.where(:first_two_albums=>@album).all.should == [@artist]
+    ds.where(:first_two_albums=>middle_album).all.should == [@artist]
+    ds.where(:first_two_albums=>diff_album).all.should == []
+    ds.exclude(:first_two_albums=>@album).all.should == [ar]
+    ds.exclude(:first_two_albums=>middle_album).all.should == [ar]
+    ds.exclude(:first_two_albums=>diff_album).all.should == [@artist, ar]
+    
+    assocs = if @els[:eager_limit_strategy] != :correlated_subquery || Album.dataset.supports_offsets_in_correlated_subqueries?
+      [:second_two_albums, :not_first_albums, :last_two_albums]
+    else
+      [:last_two_albums]
+    end
+
+    assocs.each do |a|
+      ds.where(a=>@album).all.should == []
+      ds.where(a=>middle_album).all.should == [@artist]
+      ds.where(a=>diff_album).all.should == [@artist]
+      ds.exclude(a=>@album).all.should == [@artist, ar]
+      ds.exclude(a=>middle_album).all.should == [ar]
+      ds.exclude(a=>diff_album).all.should == [ar]
+    end
+
+    Artist.one_to_one :first_two_albums, :clone=>:first_two_albums do |ads| ads.where(:albums__name=>diff_album.name) end
+    ar.add_album(diff_album)
+    ds.where(:first_two_albums=>[@album, diff_album]).all.should == [ar]
+    ds.exclude(:first_two_albums=>[@album, diff_album]).all.should == [@artist]
+  end
+end
+
+shared_examples_for "filter by associations limit strategies" do
+  it_should_behave_like "filter by associations singular association limit strategies"
+  it_should_behave_like "filter by associations one_to_many limit strategies"
+
+  specify "dataset associations with limited one_to_many associations should work correctly" do
+    Artist.one_to_many :first_two_albums, {:clone=>:first_two_albums}.merge(@els)
+    Artist.one_to_many :second_two_albums, {:clone=>:second_two_albums}.merge(@els)
+    Artist.one_to_many :not_first_albums, {:clone=>:not_first_albums}.merge(@els)
+    Artist.one_to_many :last_two_albums, {:clone=>:last_two_albums}.merge(@els)
+    @album.update(:artist => @artist)
+    middle_album = @middle_album.call
+    diff_album = @diff_album.call
+    ar = @pr.call[1]
+    ds = Artist.order(:name)
+
+    ds.where(@artist.pk_hash).first_two_albums.all.should == [@album, middle_album]
+    ds.where(@artist.pk_hash).second_two_albums.all.should == [middle_album, diff_album]
+    ds.where(@artist.pk_hash).not_first_albums.all.should == [middle_album, diff_album]
+    ds.where(@artist.pk_hash).last_two_albums.all.should == [diff_album, middle_album]
+    ds.where(ar.pk_hash).first_two_albums.all.should == []
+    ds.where(ar.pk_hash).second_two_albums.all.should == []
+    ds.where(ar.pk_hash).not_first_albums.all.should == []
+    ds.where(ar.pk_hash).last_two_albums.all.should == []
+
+    Artist.one_to_one :first_two_albums, :clone=>:first_two_albums do |ads| ads.where(:albums__name=>[diff_album.name, middle_album.name]) end
+    ar.add_album(diff_album)
+    ds.where(@artist.pk_hash).first_two_albums.all.should == [middle_album]
+    ds.where(ar.pk_hash).first_two_albums.all.should == [diff_album]
+  end
+
+  specify "filter by associations with limited many_to_many associations should work correctly" do
+    Album.send :many_to_many, :first_two_tags, {:clone=>:first_two_tags}.merge(@els)
+    Album.send :many_to_many, :second_two_tags, {:clone=>:second_two_tags}.merge(@els)
+    Album.send :many_to_many, :not_first_tags, {:clone=>:not_first_tags}.merge(@els)
+    Album.send :many_to_many, :last_two_tags, {:clone=>:last_two_tags}.merge(@els)
+    tu, tv = @other_tags.call
+    al = @pr.call.first
+    al.add_tag(tu)
+    ds = Album.order(:name)
+    
+    ds.where(:first_two_tags=>@tag).all.should == [@album]
+    ds.where(:first_two_tags=>tu).all.should == [@album, al]
+    ds.where(:first_two_tags=>tv).all.should == []
+    ds.exclude(:first_two_tags=>@tag).all.should == [al]
+    ds.exclude(:first_two_tags=>tu).all.should == []
+    ds.exclude(:first_two_tags=>tv).all.should == [@album, al]
+
+    ds.where(:second_two_tags=>@tag).all.should == []
+    ds.where(:second_two_tags=>tu).all.should == [@album]
+    ds.where(:second_two_tags=>tv).all.should == [@album]
+    ds.exclude(:second_two_tags=>@tag).all.should == [@album, al]
+    ds.exclude(:second_two_tags=>tu).all.should == [al]
+    ds.exclude(:second_two_tags=>tv).all.should == [al]
+
+    ds.where(:not_first_tags=>@tag).all.should == []
+    ds.where(:not_first_tags=>tu).all.should == [@album]
+    ds.where(:not_first_tags=>tv).all.should == [@album]
+    ds.exclude(:not_first_tags=>@tag).all.should == [@album, al]
+    ds.exclude(:not_first_tags=>tu).all.should == [al]
+    ds.exclude(:not_first_tags=>tv).all.should == [al]
+
+    ds.where(:last_two_tags=>@tag).all.should == []
+    ds.where(:last_two_tags=>tu).all.should == [@album, al]
+    ds.where(:last_two_tags=>tv).all.should == [@album]
+    ds.exclude(:last_two_tags=>@tag).all.should == [@album, al]
+    ds.exclude(:last_two_tags=>tu).all.should == []
+    ds.exclude(:last_two_tags=>tv).all.should == [al]
+
+    Album.many_to_many :first_two_tags, :clone=>:first_two_tags do |ads| ads.where(:tags__name=>tu.name) end
+    Album.many_to_many :second_two_tags, :clone=>:second_two_tags do |ads| ads.where(:tags__name=>[tu.name, tv.name]) end
+
+    ds.where(:first_two_tags=>[@tag, tu]).all.should == [@album, al]
+    ds.exclude(:first_two_tags=>[@tag, tu]).all.should == []
+
+    al.add_tag(tv)
+    ds.where(:second_two_tags=>[tv, tu]).all.should == [@album, al]
+    ds.exclude(:second_two_tags=>[tv, tu]).all.should == []
+  end
+
+  specify "dataset associations with limited many_to_many associations should work correctly" do
+    Album.send :many_to_many, :first_two_tags, {:clone=>:first_two_tags}.merge(@els)
+    Album.send :many_to_many, :second_two_tags, {:clone=>:second_two_tags}.merge(@els)
+    Album.send :many_to_many, :not_first_tags, {:clone=>:not_first_tags}.merge(@els)
+    Album.send :many_to_many, :last_two_tags, {:clone=>:last_two_tags}.merge(@els)
+    tu, tv = @other_tags.call
+    al = @pr.call.first
+    al.add_tag(tu)
+    ds = Album.order(:name)
+    
+    ds.where(@album.pk_hash).first_two_tags.all.should == [@tag, tu]
+    ds.where(@album.pk_hash).second_two_tags.all.should == [tu, tv]
+    ds.where(@album.pk_hash).not_first_tags.all.should == [tu, tv]
+    ds.where(@album.pk_hash).last_two_tags.all.should == [tv, tu]
+    ds.where(al.pk_hash).first_two_tags.all.should == [tu]
+    ds.where(al.pk_hash).second_two_tags.all.should == []
+    ds.where(al.pk_hash).not_first_tags.all.should == []
+    ds.where(al.pk_hash).last_two_tags.all.should == [tu]
+
+    Album.many_to_many :first_two_tags, :clone=>:first_two_tags do |ads| ads.where(:tags__name=>tu.name) end
+    Album.many_to_many :second_two_tags, :clone=>:second_two_tags do |ads| ads.where(:tags__name=>[tu.name, tv.name]) end
+
+    ds.where(@album.pk_hash).first_two_tags.all.should == [tu]
+    ds.where(@album.pk_hash).second_two_tags.all.should == [tv]
+    ds.where(al.pk_hash).first_two_tags.all.should == [tu]
+    ds.where(al.pk_hash).second_two_tags.all.should == []
+
+    al.add_tag(tv)
+    ds.where(@album.pk_hash).first_two_tags.all.should == [tu]
+    ds.where(@album.pk_hash).second_two_tags.all.should == [tv]
+    ds.where(al.pk_hash).first_two_tags.all.should == [tu]
+    ds.where(al.pk_hash).second_two_tags.all.should == [tv]
+  end
+
+  specify "filter by associations with limited many_through_many associations should work correctly" do
+    Artist.many_through_many :first_two_tags, {:clone=>:first_two_tags}.merge(@els)
+    Artist.many_through_many :second_two_tags, {:clone=>:second_two_tags}.merge(@els)
+    Artist.many_through_many :not_first_tags, {:clone=>:not_first_tags}.merge(@els)
+    Artist.many_through_many :last_two_tags, {:clone=>:last_two_tags}.merge(@els)
+    @album.update(:artist => @artist)
+    tu, tv = @other_tags.call
+    al, ar, _ = @pr.call
+    al.update(:artist=>ar)
+    al.add_tag(tu)
+    ds = Artist.order(:name)
+    
+    ds.where(:first_two_tags=>@tag).all.should == [@artist]
+    ds.where(:first_two_tags=>tu).all.should == [@artist, ar]
+    ds.where(:first_two_tags=>tv).all.should == []
+    ds.exclude(:first_two_tags=>@tag).all.should == [ar]
+    ds.exclude(:first_two_tags=>tu).all.should == []
+    ds.exclude(:first_two_tags=>tv).all.should == [@artist, ar]
+
+    ds.where(:second_two_tags=>@tag).all.should == []
+    ds.where(:second_two_tags=>tu).all.should == [@artist]
+    ds.where(:second_two_tags=>tv).all.should == [@artist]
+    ds.exclude(:second_two_tags=>@tag).all.should == [@artist, ar]
+    ds.exclude(:second_two_tags=>tu).all.should == [ar]
+    ds.exclude(:second_two_tags=>tv).all.should == [ar]
+
+    ds.where(:not_first_tags=>@tag).all.should == []
+    ds.where(:not_first_tags=>tu).all.should == [@artist]
+    ds.where(:not_first_tags=>tv).all.should == [@artist]
+    ds.exclude(:not_first_tags=>@tag).all.should == [@artist, ar]
+    ds.exclude(:not_first_tags=>tu).all.should == [ar]
+    ds.exclude(:not_first_tags=>tv).all.should == [ar]
+
+    ds.where(:last_two_tags=>@tag).all.should == []
+    ds.where(:last_two_tags=>tu).all.should == [@artist, ar]
+    ds.where(:last_two_tags=>tv).all.should == [@artist]
+    ds.exclude(:last_two_tags=>@tag).all.should == [@artist, ar]
+    ds.exclude(:last_two_tags=>tu).all.should == []
+    ds.exclude(:last_two_tags=>tv).all.should == [ar]
+
+    Artist.many_through_many :first_two_tags, :clone=>:first_tag do |ads| ads.where(:tags__name=>tu.name) end
+    Artist.many_through_many :second_two_tags, :clone=>:first_tag do |ads| ads.where(:tags__name=>[tv.name, tu.name]) end
+
+    ds.where(:first_two_tags=>[@tag, tu]).all.should == [@artist, ar]
+    ds.exclude(:first_two_tags=>[@tag, tu]).all.should == []
+
+    al.add_tag(tv)
+    ds.where(:second_two_tags=>[tv, tu]).all.should == [@artist, ar]
+    ds.exclude(:second_two_tags=>[tv, tu]).all.should == []
+  end
+
+  specify "dataset associations with limited many_through_many associations should work correctly" do
+    Artist.many_through_many :first_two_tags, {:clone=>:first_two_tags}.merge(@els)
+    Artist.many_through_many :second_two_tags, {:clone=>:second_two_tags}.merge(@els)
+    Artist.many_through_many :not_first_tags, {:clone=>:not_first_tags}.merge(@els)
+    Artist.many_through_many :last_two_tags, {:clone=>:last_two_tags}.merge(@els)
+    @album.update(:artist => @artist)
+    tu, tv = @other_tags.call
+    al, ar, _ = @pr.call
+    al.update(:artist=>ar)
+    al.add_tag(tu)
+    ds = Artist.order(:name)
+    
+    ds.where(@artist.pk_hash).first_two_tags.all.should == [@tag, tu]
+    ds.where(@artist.pk_hash).second_two_tags.all.should == [tu, tv]
+    ds.where(@artist.pk_hash).not_first_tags.all.should == [tu, tv]
+    ds.where(@artist.pk_hash).last_two_tags.all.should == [tv, tu]
+    ds.where(ar.pk_hash).first_two_tags.all.should == [tu]
+    ds.where(ar.pk_hash).second_two_tags.all.should == []
+    ds.where(ar.pk_hash).not_first_tags.all.should == []
+    ds.where(ar.pk_hash).last_two_tags.all.should == [tu]
+
+    Artist.many_through_many :first_two_tags, :clone=>:first_two_tags do |ads| ads.where(:tags__name=>tu.name) end
+    Artist.many_through_many :second_two_tags, :clone=>:second_two_tags do |ads| ads.where(:tags__name=>[tu.name, tv.name]) end
+
+    ds.where(@artist.pk_hash).first_two_tags.all.should == [tu]
+    ds.where(@artist.pk_hash).second_two_tags.all.should == [tv]
+    ds.where(ar.pk_hash).first_two_tags.all.should == [tu]
+    ds.where(ar.pk_hash).second_two_tags.all.should == []
+
+    al.add_tag(tv)
+    ds.where(@artist.pk_hash).first_two_tags.all.should == [tu]
+    ds.where(@artist.pk_hash).second_two_tags.all.should == [tv]
+    ds.where(ar.pk_hash).first_two_tags.all.should == [tu]
+    ds.where(ar.pk_hash).second_two_tags.all.should == [tv]
+  end
 end
 
 shared_examples_for "basic regular and composite key associations" do  
@@ -610,7 +1534,11 @@ shared_examples_for "basic regular and composite key associations" do
     Album.tags.all.should == []
     Album.alias_tags.all.should == []
     Artist.albums.all.should == []
-    Artist.tags.all.should == [] unless @no_many_through_many
+    unless @no_many_through_many
+      Album.first_tags.all.should == []
+      Artist.tags.all.should == []
+      Artist.first_tags.all.should == []
+    end
     Artist.albums.tags.all.should == []
 
     @album.update(:artist => @artist)
@@ -621,7 +1549,11 @@ shared_examples_for "basic regular and composite key associations" do
     Album.tags.all.should == [@tag]
     Album.alias_tags.all.should == [@tag]
     Artist.albums.all.should == [@album]
-    Artist.tags.all.should == [@tag] unless @no_many_through_many
+    unless @no_many_through_many
+      Album.first_tags.all.should == [@tag]
+      Artist.tags.all.should == [@tag]
+      Artist.first_tags.all.should == [@tag]
+    end
     Artist.albums.tags.all.should == [@tag]
 
     album.add_tag(tag)
@@ -632,7 +1564,11 @@ shared_examples_for "basic regular and composite key associations" do
     Album.tags.order(:name).all.should == [@tag, tag]
     Album.alias_tags.order(:name).all.should == [@tag, tag]
     Artist.albums.order(:name).all.should == [@album, album]
-    Artist.tags.order(:name).all.should == [@tag, tag] unless @no_many_through_many
+    unless @no_many_through_many
+      Album.first_tags.order(:name).all.should == [@tag, tag]
+      Artist.tags.order(:name).all.should == [@tag, tag]
+      Artist.first_tags.order(:name).all.should == [@tag, tag]
+    end
     Artist.albums.tags.order(:name).all.should == [@tag, tag]
 
     Tag.filter(Tag.qualified_primary_key_hash(tag.pk)).albums.all.should == [album]
@@ -640,7 +1576,11 @@ shared_examples_for "basic regular and composite key associations" do
     Album.filter(Album.qualified_primary_key_hash(album.pk)).tags.all.should == [tag]
     Album.filter(Album.qualified_primary_key_hash(album.pk)).alias_tags.all.should == [tag]
     Artist.filter(Artist.qualified_primary_key_hash(artist.pk)).albums.all.should == [album]
-    Artist.filter(Artist.qualified_primary_key_hash(artist.pk)).tags.all.should == [tag] unless @no_many_through_many
+    unless @no_many_through_many
+      Album.filter(Album.qualified_primary_key_hash(album.pk)).first_tags.all.should == [tag]
+      Artist.filter(Artist.qualified_primary_key_hash(artist.pk)).tags.all.should == [tag]
+      Artist.filter(Artist.qualified_primary_key_hash(artist.pk)).first_tags.all.should == [tag]
+    end
     Artist.filter(Artist.qualified_primary_key_hash(artist.pk)).albums.tags.all.should == [tag]
 
     Artist.filter(Artist.qualified_primary_key_hash(artist.pk)).albums.filter(Album.qualified_primary_key_hash(album.pk)).tags.all.should == [tag]
@@ -760,18 +1700,32 @@ shared_examples_for "regular and composite key associations" do
     it_should_behave_like "filtering/excluding by associations"
   end
 
+  describe "with default/union :eager_limit_strategy" do
+    before do
+      @els = {}
+    end
+    it_should_behave_like "eager limit strategies"
+  end
+
   describe "with :eager_limit_strategy=>:ruby" do
     before do
       @els = {:eager_limit_strategy=>:ruby}
     end
     it_should_behave_like "eager limit strategies"
+    it_should_behave_like "eager_graph limit strategies"
   end
 
-  describe "with :eager_limit_strategy=>true" do
+  describe "with :eager_limit_strategy=>:distinct_on" do
     before do
-      @els = {:eager_limit_strategy=>true}
+      @els = {:eager_limit_strategy=>:distinct_on}
     end
     it_should_behave_like "one_to_one eager limit strategies"
+    it_should_behave_like "one_through_one eager limit strategies"
+    it_should_behave_like "one_through_many eager limit strategies"
+    it_should_behave_like "one_to_one eager_graph limit strategies"
+    it_should_behave_like "one_through_one eager_graph limit strategies"
+    it_should_behave_like "one_through_many eager_graph limit strategies"
+    it_should_behave_like "filter by associations singular association limit strategies"
   end if DB.dataset.supports_ordered_distinct_on?
 
   describe "with :eager_limit_strategy=>:window_function" do
@@ -779,6 +1733,8 @@ shared_examples_for "regular and composite key associations" do
       @els = {:eager_limit_strategy=>:window_function}
     end
     it_should_behave_like "eager limit strategies"
+    it_should_behave_like "eager_graph limit strategies"
+    it_should_behave_like "filter by associations limit strategies"
   end if DB.dataset.supports_window_functions?
 
   specify "should work with a many_through_many association" do
@@ -808,6 +1764,35 @@ shared_examples_for "regular and composite key associations" do
     a.should == [@album]
     a.first.artist.should == @artist
     a.first.artist.tags.should == [@tag]
+  end
+
+  specify "should work with a one_through_many association" do
+    @album.update(:artist => @artist)
+    @album.add_tag(@tag)
+
+    @album.reload
+    @artist.reload
+    @tag.reload
+    
+    @album.tags.should == [@tag]
+    
+    a = Artist.eager(:first_tag).all
+    a.should == [@artist]
+    a.first.first_tag.should == @tag
+    
+    a = Artist.eager_graph(:first_tag).all
+    a.should == [@artist]
+    a.first.first_tag.should == @tag
+    
+    a = Album.eager(:artist=>:first_tag).all
+    a.should == [@album]
+    a.first.artist.should == @artist
+    a.first.artist.first_tag.should == @tag
+    
+    a = Album.eager_graph(:artist=>:first_tag).all
+    a.should == [@album]
+    a.first.artist.should == @artist
+    a.first.artist.first_tag.should == @tag
   end
 end
 
@@ -849,11 +1834,15 @@ describe "Sequel::Model Simple Associations" do
       one_to_one :first_a_album, :clone=>:a_albums
       plugin :many_through_many
       many_through_many :tags, [[:albums, :artist_id, :id], [:albums_tags, :album_id, :tag_id]]
-      many_through_many :first_two_tags, :clone=>:tags, :order=>:tags__name, :limit=>2
-      many_through_many :second_two_tags, :clone=>:tags, :order=>:tags__name, :limit=>[2, 1]
-      many_through_many :not_first_tags, :clone=>:tags, :order=>:tags__name, :limit=>[nil, 1]
-      many_through_many :last_two_tags, :clone=>:tags, :order=>Sequel.desc(:tags__name), :limit=>2
+      many_through_many :first_two_tags, :clone=>:tags, :order=>:tags__name, :limit=>2, :graph_order=>:name
+      many_through_many :second_two_tags, :clone=>:tags, :order=>:tags__name, :limit=>[2, 1], :graph_order=>:name
+      many_through_many :not_first_tags, :clone=>:tags, :order=>:tags__name, :limit=>[nil, 1], :graph_order=>:name
+      many_through_many :last_two_tags, :clone=>:tags, :order=>Sequel.desc(:tags__name), :limit=>2, :graph_order=>Sequel.desc(:name)
       many_through_many :t_tags, :clone=>:tags, :conditions=>{:tags__name=>'T'}
+      one_through_many :first_tag, [[:albums, :artist_id, :id], [:albums_tags, :album_id, :tag_id]], :order=>:tags__name, :graph_order=>:name, :class=>:Tag
+      one_through_many :second_tag, :clone=>:first_tag, :limit=>[nil, 1]
+      one_through_many :last_tag, :clone=>:first_tag, :order=>Sequel.desc(:tags__name), :graph_order=>Sequel.desc(:name)
+      one_through_many :t_tag, :clone=>:first_tag, :conditions=>{:tags__name=>'T'}
     end
     class ::Album < Sequel::Model(@db)
       plugin :dataset_associations
@@ -867,6 +1856,11 @@ describe "Sequel::Model Simple Associations" do
       many_to_many :last_two_tags, :clone=>:tags, :order=>Sequel.desc(:name), :limit=>2
       many_to_many :t_tags, :clone=>:tags, :conditions=>{:name=>'T'}
       many_to_many :alias_t_tags, :clone=>:t_tags, :join_table=>:albums_tags___at
+      one_through_one :first_tag, :clone=>:tags, :order=>:name
+      one_through_one :second_tag, :clone=>:first_tag, :limit=>[nil, 1]
+      one_through_one :last_tag, :clone=>:tags, :order=>Sequel.desc(:name)
+      one_through_one :t_tag, :clone=>:t_tags
+      one_through_one :alias_t_tag, :clone=>:alias_t_tags
     end
     class ::Tag < Sequel::Model(@db)
       plugin :dataset_associations
@@ -890,6 +1884,34 @@ describe "Sequel::Model Simple Associations" do
   end
   
   it_should_behave_like "regular and composite key associations"
+
+  describe "with :correlated_subquery limit strategy" do
+    before do
+      @els = {:eager_limit_strategy=>:correlated_subquery}
+    end
+
+    it_should_behave_like "one_to_one eager_graph limit strategies"
+    it_should_behave_like "one_to_many eager_graph limit strategies"
+    it_should_behave_like "filter by associations one_to_one limit strategies"
+    it_should_behave_like "filter by associations one_to_many limit strategies"
+  end if DB.dataset.supports_limits_in_correlated_subqueries?
+
+  specify "should handle eager loading limited associations for many objects" do
+    @db[:artists].import([:name], (1..99).map{|i| [i.to_s]})
+    artists = Artist.eager(:albums).all
+    artists.length.should == 100
+    artists.each{|a| a.albums.should == []}
+    artists = Artist.eager(:first_two_albums).all
+    artists.length.should == 100
+    artists.each{|a| a.first_two_albums.should == []}
+    @db[:albums].insert([:artist_id], @db[:artists].select(:id))
+    artists = Artist.eager(:albums).all
+    artists.length.should == 100
+    artists.each{|a| a.albums.length.should == 1}
+    artists = Artist.eager(:first_two_albums).all
+    artists.length.should == 100
+    artists.each{|a| a.first_two_albums.length.should == 1}
+  end
 
   specify "should handle many_to_one associations with same name as :key" do
     Album.def_column_alias(:artist_id_id, :artist_id)
@@ -1050,7 +2072,7 @@ describe "Sequel::Model Composite Key Associations" do
       set_primary_key [:id1, :id2]
       unrestrict_primary_key
       one_to_many :albums, :key=>[:artist_id1, :artist_id2], :order=>:name
-      one_to_one :first_album, :clone=>:albums, :order=>:name
+      one_to_one :first_album, :clone=>:albums
       one_to_one :last_album, :clone=>:albums, :order=>Sequel.desc(:name)
       one_to_one :second_album, :clone=>:albums, :limit=>[nil, 1]
       one_to_many :first_two_albums, :clone=>:albums, :order=>:name, :limit=>2
@@ -1061,11 +2083,15 @@ describe "Sequel::Model Composite Key Associations" do
       one_to_one :first_a_album, :clone=>:a_albums
       plugin :many_through_many
       many_through_many :tags, [[:albums, [:artist_id1, :artist_id2], [:id1, :id2]], [:albums_tags, [:album_id1, :album_id2], [:tag_id1, :tag_id2]]]
-      many_through_many :first_two_tags, :clone=>:tags, :order=>:tags__name, :limit=>2
-      many_through_many :second_two_tags, :clone=>:tags, :order=>:tags__name, :limit=>[2, 1]
-      many_through_many :not_first_tags, :clone=>:tags, :order=>:tags__name, :limit=>[nil, 1]
-      many_through_many :last_two_tags, :clone=>:tags, :order=>Sequel.desc(:tags__name), :limit=>2
+      many_through_many :first_two_tags, :clone=>:tags, :order=>:tags__name, :limit=>2, :graph_order=>:name
+      many_through_many :second_two_tags, :clone=>:tags, :order=>:tags__name, :limit=>[2, 1], :graph_order=>:name
+      many_through_many :not_first_tags, :clone=>:tags, :order=>:tags__name, :limit=>[nil, 1], :graph_order=>:name
+      many_through_many :last_two_tags, :clone=>:tags, :order=>Sequel.desc(:tags__name), :limit=>2, :graph_order=>Sequel.desc(:name)
       many_through_many :t_tags, :clone=>:tags do |ds| ds.where(:tags__name=>'T') end
+      one_through_many :first_tag, [[:albums, [:artist_id1, :artist_id2], [:id1, :id2]], [:albums_tags, [:album_id1, :album_id2], [:tag_id1, :tag_id2]]], :order=>:tags__name, :graph_order=>:name, :class=>:Tag
+      one_through_many :second_tag, :clone=>:first_tag, :limit=>[nil, 1]
+      one_through_many :last_tag, :clone=>:first_tag, :order=>Sequel.desc(:tags__name), :graph_order=>Sequel.desc(:name)
+      one_through_many :t_tag, :clone=>:first_tag do |ds| ds.where(:tags__name=>'T') end
     end
     class ::Album < Sequel::Model(@db)
       plugin :dataset_associations
@@ -1081,6 +2107,11 @@ describe "Sequel::Model Composite Key Associations" do
       many_to_many :last_two_tags, :clone=>:tags, :order=>Sequel.desc(:name), :limit=>2
       many_to_many :t_tags, :clone=>:tags do |ds| ds.where(:name=>'T') end
       many_to_many :alias_t_tags, :clone=>:t_tags, :join_table=>:albums_tags___at
+      one_through_one :first_tag, :clone=>:tags, :order=>:name
+      one_through_one :second_tag, :clone=>:first_tag, :limit=>[nil, 1]
+      one_through_one :last_tag, :clone=>:tags, :order=>Sequel.desc(:name)
+      one_through_one :t_tag, :clone=>:t_tags
+      one_through_one :alias_t_tag, :clone=>:alias_t_tags
     end
     class ::Tag < Sequel::Model(@db)
       plugin :dataset_associations
@@ -1106,6 +2137,17 @@ describe "Sequel::Model Composite Key Associations" do
   end
 
   it_should_behave_like "regular and composite key associations"
+
+  describe "with :correlated_subquery limit strategy" do
+    before do
+      @els = {:eager_limit_strategy=>:correlated_subquery}
+    end
+
+    it_should_behave_like "one_to_one eager_graph limit strategies"
+    it_should_behave_like "one_to_many eager_graph limit strategies"
+    it_should_behave_like "filter by associations one_to_one limit strategies"
+    it_should_behave_like "filter by associations one_to_many limit strategies"
+  end if DB.dataset.supports_limits_in_correlated_subqueries? && DB.dataset.supports_multiple_column_in?
 
   specify "should have add method accept hashes and create new records" do
     @artist.remove_all_albums
@@ -1217,6 +2259,7 @@ describe "Sequel::Model pg_array_to_many" do
   
   it_should_behave_like "basic regular and composite key associations"
   it_should_behave_like "many_to_many eager limit strategies"
+  it_should_behave_like "many_to_many eager_graph limit strategies"
 
   it "should handle adding and removing entries in array" do
     a = Album.create
@@ -1225,7 +2268,7 @@ describe "Sequel::Model pg_array_to_many" do
     a.remove_tag(@tag)
     a.save
   end
-end if DB.database_type == :postgres && DB.adapter_scheme == :postgres && DB.server_version >= 90300
+end if DB.database_type == :postgres && [:postgres, :jdbc].include?(DB.adapter_scheme) && DB.server_version >= 90300
 
 describe "Sequel::Model many_to_pg_array" do
   before(:all) do
@@ -1297,6 +2340,7 @@ describe "Sequel::Model many_to_pg_array" do
   
   it_should_behave_like "basic regular and composite key associations"
   it_should_behave_like "many_to_many eager limit strategies"
+  it_should_behave_like "many_to_many eager_graph limit strategies"
 
   it "should handle adding and removing entries in array" do
     a = Album.create
@@ -1304,7 +2348,7 @@ describe "Sequel::Model many_to_pg_array" do
     a.add_tag(@tag)
     a.remove_tag(@tag)
   end
-end if DB.database_type == :postgres && DB.adapter_scheme == :postgres && DB.server_version >= 90300
+end if DB.database_type == :postgres && [:postgres, :jdbc].include?(DB.adapter_scheme) && DB.server_version >= 90300
 
 describe "Sequel::Model Associations with clashing column names" do
   before(:all) do
@@ -1334,6 +2378,7 @@ describe "Sequel::Model Associations with clashing column names" do
     @Foo.one_to_one :bar, :primary_key=>:obj_id, :primary_key_column=>:object_id, :key=>:object_id, :key_method=>:obj_id, :class=>@Bar
     @Bar.many_to_one :foo, :key=>:obj_id, :key_column=>:object_id, :primary_key=>:object_id, :primary_key_method=>:obj_id, :class=>@Foo
     @Foo.many_to_many :mtmbars, :join_table=>:bars_foos, :left_primary_key=>:obj_id, :left_primary_key_column=>:object_id, :right_primary_key=>:object_id, :right_primary_key_method=>:obj_id, :left_key=>:foo_id, :right_key=>:object_id, :class=>@Bar
+    @Foo.one_through_one :mtmbar, :join_table=>:bars_foos, :left_primary_key=>:obj_id, :left_primary_key_column=>:object_id, :right_primary_key=>:object_id, :right_primary_key_method=>:obj_id, :left_key=>:foo_id, :right_key=>:object_id, :class=>@Bar
     @Bar.many_to_many :mtmfoos, :join_table=>:bars_foos, :left_primary_key=>:obj_id, :left_primary_key_column=>:object_id, :right_primary_key=>:object_id, :right_primary_key_method=>:obj_id, :left_key=>:object_id, :right_key=>:foo_id, :class=>@Foo
     @foo = @Foo.create(:obj_id=>2)
     @bar = @Bar.create(:obj_id=>2)
@@ -1348,6 +2393,7 @@ describe "Sequel::Model Associations with clashing column names" do
     @Foo.first.bars.should == [@bar]
     @Foo.first.bar.should == @bar
     @Foo.first.mtmbars.should == [@bar]
+    @Foo.first.mtmbar.should == @bar
     @Bar.first.mtmfoos.should == [@foo]
   end
 
@@ -1356,6 +2402,7 @@ describe "Sequel::Model Associations with clashing column names" do
     @Foo.eager(:bars).all.map{|o| [o, o.bars]}.should == [[@foo, [@bar]]]
     @Foo.eager(:bar).all.map{|o| [o, o.bar]}.should == [[@foo, @bar]]
     @Foo.eager(:mtmbars).all.map{|o| [o, o.mtmbars]}.should == [[@foo, [@bar]]]
+    @Foo.eager(:mtmbar).all.map{|o| [o, o.mtmbar]}.should == [[@foo, @bar]]
     @Bar.eager(:mtmfoos).all.map{|o| [o, o.mtmfoos]}.should == [[@bar, [@foo]]]
   end
 
@@ -1364,6 +2411,7 @@ describe "Sequel::Model Associations with clashing column names" do
     @Foo.eager_graph(:bars).all.map{|o| [o, o.bars]}.should == [[@foo, [@bar]]]
     @Foo.eager_graph(:bar).all.map{|o| [o, o.bar]}.should == [[@foo, @bar]]
     @Foo.eager_graph(:mtmbars).all.map{|o| [o, o.mtmbars]}.should == [[@foo, [@bar]]]
+    @Foo.eager_graph(:mtmbar).all.map{|o| [o, o.mtmbar]}.should == [[@foo, @bar]]
     @Bar.eager_graph(:mtmfoos).all.map{|o| [o, o.mtmfoos]}.should == [[@bar, [@foo]]]
   end
 
@@ -1377,7 +2425,7 @@ describe "Sequel::Model Associations with clashing column names" do
     @bar.obj_id.should == 2
 
     @foo.add_bar(b)
-    @foo.bars.sort_by{|x| x.obj_id}.should == [@bar, b]
+    @foo.bars.sort_by{|x| x.id}.should == [@bar, b]
     @foo.remove_bar(b)
     @foo.bars.should == [@bar]
     @foo.remove_all_bars

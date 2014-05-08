@@ -14,7 +14,6 @@ module Sequel
         conn = if opts.include?(:drvconnect)
           ::ODBC::Database.new.drvconnect(opts[:drvconnect])
         elsif opts.include?(:driver)
-          Deprecation.deprecate("The odbc driver's handling of the :driver option is thought to be broken and will probably be removed in the future. If you are successfully using it, please contact the developers.")
           drv = ::ODBC::Driver.new
           drv.name = 'Sequel ODBC Driver130'
           opts.each do |param, value|
@@ -128,7 +127,7 @@ module Sequel
         # ODBCColumn#mapSqlTypeToGenericType and Column#klass.
         case v
         when ::ODBC::TimeStamp
-          db.to_application_timestamp([v.year, v.month, v.day, v.hour, v.minute, v.second])
+          db.to_application_timestamp([v.year, v.month, v.day, v.hour, v.minute, v.second, v.fraction])
         when ::ODBC::Time
           Sequel::SQLTime.create(v.hour, v.minute, v.second)
         when ::ODBC::Date

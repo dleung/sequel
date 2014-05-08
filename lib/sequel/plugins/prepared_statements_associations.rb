@@ -22,17 +22,6 @@ module Sequel
       # lambda returns the next integer to use.
       NEXT = lambda{MUTEX.synchronize{i += 1}}
 
-      module ClassMethods
-        # Disable prepared statement use if a block is given, or the :dataset or :conditions
-        # options are used, or you are cloning an association.
-        def associate(type, name, opts = OPTS, &block)
-          if block || opts[:dataset] || (opts[:clone] && association_reflection(opts[:clone])[:prepared_statement] == false)
-            opts = opts.merge(:prepared_statement=>false)
-          end
-          super(type, name, opts, &block)
-        end
-      end
-
       module InstanceMethods
         private
 
@@ -50,9 +39,9 @@ module Sequel
             association_bound_variable_hash(opts.associated_class.table_name, opts.primary_keys, opts[:keys])
           when :one_to_many, :one_to_one
             association_bound_variable_hash(opts.associated_class.table_name, opts[:keys], opts[:primary_keys])
-          when :many_to_many
+          when :many_to_many, :one_through_one
             association_bound_variable_hash(opts.join_table_alias, opts[:left_keys], opts[:left_primary_keys])
-          when :many_through_many
+          when :many_through_many, :one_through_many
             association_bound_variable_hash(opts.final_reverse_edge[:alias], Array(opts[:left_key]), opts[:left_primary_keys])
           end
         end
@@ -62,26 +51,46 @@ module Sequel
         # instance.  Return false if such a prepared statement cannot be created.
         def association_prepared_statement(opts, assoc_bv)
           opts.send(:cached_fetch, :prepared_statement) do
-            ds, bv = _associated_dataset(opts, {}).unbind
-            if bv.length != assoc_bv.length
-              h = {}
-              bv.each do |k,v|
-                h[k] = v unless assoc_bv.has_key?(k)
+            unless opts[:instance_specific]
+              ds, bv = _associated_dataset(opts, {}).unbind
+              if bv.length != assoc_bv.length
+                h = {}
+                bv.each do |k,v|
+                  h[k] = v unless assoc_bv.has_key?(k)
+                end
+                ds = ds.bind(h)
               end
-              ds = ds.bind(h)
+              ps = ds.prepare(opts.returns_array? ? :select : :first, :"smpsap_#{NEXT.call}")
+              ps.log_sql = true
+              ps
             end
-            ps = ds.prepare(opts.returns_array? ? :select : :first, :"smpsap_#{NEXT.call}")
-            ps.log_sql = true
-            ps
           end
         end
 
-        # If a prepared statement can be used to load the associated objects, execute it to retrieve them.  Otherwise,
-        # fall back to the default implementation.
-        def _load_associated_objects(opts, dynamic_opts=OPTS)
-          if !opts.can_have_associated_objects?(self) || dynamic_opts[:callback] || (load_with_primary_key_lookup?(opts, dynamic_opts) && opts.associated_class.respond_to?(:cache_get_pk))
+        # Use a prepared statement if possible to load the associated object,
+        # unless a dynamic callback is given.
+        def _load_associated_object(opts, dynamic_opts)
+          if !dynamic_opts[:callback] && (bv = association_bound_variables(opts)) && (ps ||= association_prepared_statement(opts, bv))
+            ps.call(bv)
+          else
             super
-          elsif (bv = association_bound_variables(opts)) && (ps ||= association_prepared_statement(opts, bv))
+          end
+        end
+
+        # Use a prepared statement if possible to load the associated object,
+        # unless the associated model uses caching.
+        def _load_associated_object_via_primary_key(opts)
+          if !opts.associated_class.respond_to?(:cache_get_pk) && (bv = association_bound_variables(opts)) && (ps ||= association_prepared_statement(opts, bv))
+            ps.call(bv)
+          else
+            super
+          end
+        end
+
+        # Use a prepared statement if possible to load the associated objects,
+        # unless a dynamic callback is given.
+        def _load_associated_object_array(opts, dynamic_opts)
+          if !dynamic_opts[:callback] && (bv = association_bound_variables(opts)) && (ps ||= association_prepared_statement(opts, bv))
             ps.call(bv)
           else
             super

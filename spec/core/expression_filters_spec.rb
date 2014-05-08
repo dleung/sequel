@@ -419,13 +419,25 @@ describe Sequel::SQL::VirtualRow do
     @d.l{version{}}.should == 'version()'
   end
 
-  it "should treat methods with a block and a leading argument :* as a function call with the SQL wildcard" do
+  it "should treat methods with a block and a leading argument :* as a function call starting with the SQL wildcard" do
     @d.l{count(:*){}}.should == 'count(*)'
+    @d.l{count(:*, 1){}}.should == 'count(*, 1)'
+  end
+
+  it "should support * method on functions to add * as the first argument" do
+    @d.l{count{}.*}.should == 'count(*)'
+    @d.l{count(1).*}.should == 'count(*, 1)'
+    @d.literal(Sequel.expr{count(1) * 2}).should == '(count(1) * 2)'
   end
 
   it "should treat methods with a block and a leading argument :distinct as a function call with DISTINCT and the additional method arguments" do
     @d.l{count(:distinct, column1){}}.should == 'count(DISTINCT "column1")'
     @d.l{count(:distinct, column1, column2){}}.should == 'count(DISTINCT "column1", "column2")'
+  end
+
+  it "should support distinct methods on functions to use DISTINCT before the arguments" do
+    @d.l{count(column1).distinct}.should == 'count(DISTINCT "column1")'
+    @d.l{count(column1, column2).distinct}.should == 'count(DISTINCT "column1", "column2")'
   end
 
   it "should raise an error if an unsupported argument is used with a block" do
@@ -479,6 +491,11 @@ describe Sequel::SQL::VirtualRow do
     @d.l{count(:over, :* =>true, :partition=>a, :order=>b, :window=>:win, :frame=>:rows){}}.should == 'count(*) OVER ("win" PARTITION BY "a" ORDER BY "b" ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)'
   end
 
+  it "should support over method on functions to create window functions" do
+    @d.l{rank{}.over}.should == 'rank() OVER ()'
+    @d.l{sum(c).over(:partition=>a, :order=>b, :window=>:win, :frame=>:rows)}.should == 'sum("c") OVER ("win" PARTITION BY "a" ORDER BY "b" ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)'
+  end
+
   it "should raise an error if window functions are not supported" do
     class << @d; remove_method :supports_window_functions? end
     meta_def(@d, :supports_window_functions?){false}
@@ -486,6 +503,25 @@ describe Sequel::SQL::VirtualRow do
     proc{Sequel.mock.dataset.filter{count(:over, :* =>true, :partition=>a, :order=>b, :window=>:win, :frame=>:rows){}}.sql}.should raise_error(Sequel::Error)
   end
   
+  it "should support function method on identifiers to create functions" do
+    @d.l{rank.function}.should == 'rank()' 
+    @d.l{sum.function(c)}.should == 'sum("c")'
+    @d.l{sum.function(c, 1)}.should == 'sum("c", 1)'
+  end
+
+  it "should support function method on qualified identifiers to create functions" do
+    @d.l{sch__rank.function}.should == 'sch.rank()' 
+    @d.l{sch__sum.function(c)}.should == 'sch.sum("c")'
+    @d.l{sch__sum.function(c, 1)}.should == 'sch.sum("c", 1)'
+    @d.l{Sequel.qualify(sch__sum, :x__y).function(c, 1)}.should == 'sch.sum.x.y("c", 1)'
+  end
+
+  it "should handle quoted function names" do
+    def @d.supports_quoted_function_names?; true; end
+    @d.l{rank.function}.should == '"rank"()' 
+    @d.l{sch__rank.function}.should == '"sch"."rank"()' 
+  end
+
   it "should deal with classes without requiring :: prefix" do
     @d.l{date < Date.today}.should == "(\"date\" < '#{Date.today}')"
     @d.l{date < Sequel::CURRENT_DATE}.should == "(\"date\" < CURRENT_DATE)"
@@ -678,7 +714,7 @@ describe "Sequel core extension replacements" do
   end
 
   it "Sequel.& should join all arguments given with AND" do
-    l(Sequel.&(:a), "(a)")
+    l(Sequel.&(:a), "a")
     l(Sequel.&(:a, :b=>:c), "(a AND (b = c))")
     l(Sequel.&(:a, {:b=>:c}, Sequel.lit('d')), "(a AND (b = c) AND d)")
   end
@@ -688,7 +724,7 @@ describe "Sequel core extension replacements" do
   end
 
   it "Sequel.| should join all arguments given with OR" do
-    l(Sequel.|(:a), "(a)")
+    l(Sequel.|(:a), "a")
     l(Sequel.|(:a, :b=>:c), "(a OR (b = c))")
     l(Sequel.|(:a, {:b=>:c}, Sequel.lit('d')), "(a OR (b = c) OR d)")
   end
@@ -772,7 +808,7 @@ describe "Sequel core extension replacements" do
 
   it "Sequel.{+,-,*,/} should accept arguments and use the appropriate operator" do
     %w'+ - * /'.each do |op|
-      l(Sequel.send(op, 1), '(1)')
+      l(Sequel.send(op, 1), '1')
       l(Sequel.send(op, 1, 2), "(1 #{op} 2)")
       l(Sequel.send(op, 1, 2, 3), "(1 #{op} 2 #{op} 3)")
     end
@@ -902,6 +938,22 @@ describe "Sequel::SQLTime" do
   specify ".create should create from hour, minutes, seconds and optional microseconds" do
     @db.literal(Sequel::SQLTime.create(1, 2, 3)).should == "'01:02:03.000000'"
     @db.literal(Sequel::SQLTime.create(1, 2, 3, 500000)).should == "'01:02:03.500000'"
+  end
+
+  specify "#to_s should include hour, minute, and second by default" do
+    Sequel::SQLTime.create(1, 2, 3).to_s.should == "01:02:03"
+    Sequel::SQLTime.create(1, 2, 3, 500000).to_s.should == "01:02:03"
+  end
+
+  specify "#to_s should handle arguments with super" do
+    t = Sequel::SQLTime.create(1, 2, 3)
+    begin
+      Time.now.to_s('%F')
+    rescue
+      proc{t.to_s('%F')}.should raise_error
+    else
+      proc{t.to_s('%F')}.should_not raise_error
+    end
   end
 end
 
@@ -1066,6 +1118,6 @@ end
 
 describe "Sequel core extensions" do
   specify "should have Sequel.core_extensions? be false by default" do
-    Sequel.core_extensions?.should be_false
+    Sequel.core_extensions?.should == false
   end
 end

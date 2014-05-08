@@ -269,22 +269,23 @@ describe Sequel::Model::Associations::AssociationReflection, "#remove_before_des
 
   it "should be true for many_to_one and many_to_many associations" do
     @c.many_to_one :c, :class=>@c
-    @c.association_reflection(:c).remove_before_destroy?.should be_true
+    @c.association_reflection(:c).remove_before_destroy?.should == true
     @c.many_to_many :cs, :class=>@c
-    @c.association_reflection(:cs).remove_before_destroy?.should be_true
+    @c.association_reflection(:cs).remove_before_destroy?.should == true
   end
 
   it "should be false for one_to_one and one_to_many associations" do
     @c.one_to_one :c, :class=>@c
-    @c.association_reflection(:c).remove_before_destroy?.should be_false
+    @c.association_reflection(:c).remove_before_destroy?.should == false
     @c.one_to_many :cs, :class=>@c
-    @c.association_reflection(:cs).remove_before_destroy?.should be_false
+    @c.association_reflection(:cs).remove_before_destroy?.should == false
   end
 end
 
-describe Sequel::Model::Associations::AssociationReflection, "#eager_limit_strategy" do
+describe Sequel::Model::Associations::AssociationReflection, "#filter_by_associations_limit_strategy" do
   before do
-    @c = Class.new(Sequel::Model(:a))
+    @db = Sequel.mock
+    @c = Class.new(Sequel::Model(@db[:a]))
   end
   after do
     Sequel::Model.default_eager_limit_strategy = true
@@ -292,53 +293,83 @@ describe Sequel::Model::Associations::AssociationReflection, "#eager_limit_strat
 
   it "should be nil by default for *_one associations" do
     @c.many_to_one :c, :class=>@c
-    @c.association_reflection(:c).eager_limit_strategy.should be_nil
+    @c.association_reflection(:c).send(:filter_by_associations_limit_strategy).should be_nil
     @c.one_to_one :c, :class=>@c
-    @c.association_reflection(:c).eager_limit_strategy.should be_nil
+    @c.association_reflection(:c).send(:filter_by_associations_limit_strategy).should be_nil
+    @c.one_through_one :c, :class=>@c
+    @c.association_reflection(:c).send(:filter_by_associations_limit_strategy).should be_nil
   end
 
-  it "should be :ruby by default for *_many associations" do
+  it "should be :correlated_subquery by default for one_to_many and one_to_one with :order associations" do
+    @c.one_to_one :c, :class=>@c, :order=>:a
+    @c.association_reflection(:c).send(:filter_by_associations_limit_strategy).should == :correlated_subquery
     @c.one_to_many :cs, :class=>@c, :limit=>1
-    @c.association_reflection(:cs).eager_limit_strategy.should == :ruby
-    @c.many_to_many :cs, :class=>@c, :limit=>1
-    @c.association_reflection(:cs).eager_limit_strategy.should == :ruby
+    @c.association_reflection(:cs).send(:filter_by_associations_limit_strategy).should == :correlated_subquery
   end
 
-  it "should be nil for many_to_one associations" do
+  it "should be :ruby by default for many_to_many and one_through_one with :order associations" do
+    @c.one_through_one :c, :class=>@c, :order=>:a
+    @c.association_reflection(:c).send(:filter_by_associations_limit_strategy).should == :ruby
+    @c.many_to_many :cs, :class=>@c, :limit=>1
+    @c.association_reflection(:cs).send(:filter_by_associations_limit_strategy).should == :ruby
+  end
+
+  it "should be nil for many_to_one associations even if :eager_limit_strategy or :filter_limit_strategy is used" do
     @c.many_to_one :c, :class=>@c, :eager_limit_strategy=>true
-    @c.association_reflection(:c).eager_limit_strategy.should be_nil
+    @c.association_reflection(:c).send(:filter_by_associations_limit_strategy).should be_nil
     @c.many_to_one :c, :class=>@c, :eager_limit_strategy=>:distinct_on
-    @c.association_reflection(:c).eager_limit_strategy.should be_nil
+    @c.association_reflection(:c).send(:filter_by_associations_limit_strategy).should be_nil
+    @c.many_to_one :c, :class=>@c, :filter_limit_strategy=>true
+    @c.association_reflection(:c).send(:filter_by_associations_limit_strategy).should be_nil
   end
 
   it "should be a symbol for other associations if given a symbol" do
     @c.one_to_one :c, :class=>@c, :eager_limit_strategy=>:distinct_on
-    @c.association_reflection(:c).eager_limit_strategy.should == :distinct_on
+    @c.association_reflection(:c).send(:filter_by_associations_limit_strategy).should == :distinct_on
     @c.one_to_many :cs, :class=>@c, :eager_limit_strategy=>:window_function, :limit=>1
-    @c.association_reflection(:cs).eager_limit_strategy.should == :window_function
+    @c.association_reflection(:cs).send(:filter_by_associations_limit_strategy).should == :window_function
   end
 
   it "should use :distinct_on for one_to_one associations if picking and the association dataset supports ordered distinct on" do
     def (@c.dataset).supports_ordered_distinct_on?() true end
     @c.one_to_one :c, :class=>@c, :eager_limit_strategy=>true
-    @c.association_reflection(:c).eager_limit_strategy.should == :distinct_on
+    @c.association_reflection(:c).send(:filter_by_associations_limit_strategy).should == :distinct_on
   end
 
   it "should use :window_function for associations if picking and the association dataset supports window functions" do
     def (@c.dataset).supports_window_functions?() true end
     @c.one_to_one :c, :class=>@c, :eager_limit_strategy=>true
-    @c.association_reflection(:c).eager_limit_strategy.should == :window_function
+    @c.association_reflection(:c).send(:filter_by_associations_limit_strategy).should == :window_function
     @c.one_to_many :cs, :class=>@c, :eager_limit_strategy=>true, :limit=>1
-    @c.association_reflection(:cs).eager_limit_strategy.should == :window_function
+    @c.association_reflection(:cs).send(:filter_by_associations_limit_strategy).should == :window_function
     @c.many_to_many :cs, :class=>@c, :eager_limit_strategy=>true, :limit=>1
-    @c.association_reflection(:cs).eager_limit_strategy.should == :window_function
+    @c.association_reflection(:cs).send(:filter_by_associations_limit_strategy).should == :window_function
   end
 
-  it "should use :ruby for *_many associations if picking and the association dataset doesn't window functions" do
+  it "should use :ruby for one_to_many associations if the database doesn't support limits in subqueries" do
+    def (@c.dataset).supports_limits_in_correlated_subqueries?; false; end
     @c.one_to_many :cs, :class=>@c, :eager_limit_strategy=>true, :limit=>1
-    @c.association_reflection(:cs).eager_limit_strategy.should == :ruby
+    @c.association_reflection(:cs).send(:filter_by_associations_limit_strategy).should == :ruby
+  end
+
+  it "should use :ruby for one_to_many associations if offset doesn't work in correlated subqueries and an offset is used" do
+    def (@c.dataset).supports_offsets_in_correlated_subqueries?; false; end
+    @c.one_to_many :cs, :class=>@c, :eager_limit_strategy=>true, :limit=>1
+    @c.association_reflection(:cs).send(:filter_by_associations_limit_strategy).should == :correlated_subquery
+    @c.one_to_many :cs, :class=>@c, :eager_limit_strategy=>true, :limit=>[1, 1]
+    @c.association_reflection(:cs).send(:filter_by_associations_limit_strategy).should == :ruby
+  end
+
+  it "should use :ruby for one_to_many associations if composite primary key is used and database does not multiple columns in IN" do
+    def (@c.dataset).supports_multiple_column_in?; false; end
+    @c.set_primary_key [:id, :id2]
+    @c.one_to_many :cs, :class=>@c, :eager_limit_strategy=>true, :limit=>1, :key=>[:id, :id2]
+    @c.association_reflection(:cs).send(:filter_by_associations_limit_strategy).should == :ruby
+  end
+
+  it "should use :ruby for many_to_many associations if picking and the association dataset doesn't window functions" do
     @c.many_to_many :cs, :class=>@c, :eager_limit_strategy=>true, :limit=>1
-    @c.association_reflection(:cs).eager_limit_strategy.should == :ruby
+    @c.association_reflection(:cs).send(:filter_by_associations_limit_strategy).should == :ruby
   end
 
   it "should respect Model.default_eager_limit_strategy to *_many associations" do
@@ -348,24 +379,32 @@ describe Sequel::Model::Associations::AssociationReflection, "#eager_limit_strat
     c.dataset = :a
     c.default_eager_limit_strategy.should == :window_function
     c.one_to_many :cs, :class=>c, :limit=>1
-    c.association_reflection(:cs).eager_limit_strategy.should == :window_function
+    c.association_reflection(:cs).send(:filter_by_associations_limit_strategy).should == :window_function
     c.many_to_many :cs, :class=>c, :limit=>1
-    c.association_reflection(:cs).eager_limit_strategy.should == :window_function
+    c.association_reflection(:cs).send(:filter_by_associations_limit_strategy).should == :window_function
 
     Sequel::Model.default_eager_limit_strategy = true
     c = Class.new(Sequel::Model)
     c.dataset = :a
     c.one_to_many :cs, :class=>c, :limit=>1
-    c.association_reflection(:cs).eager_limit_strategy.should == :ruby
+    c.association_reflection(:cs).send(:filter_by_associations_limit_strategy).should == :correlated_subquery
     def (c.dataset).supports_window_functions?() true end
     c.many_to_many :cs, :class=>c, :limit=>1
-    c.association_reflection(:cs).eager_limit_strategy.should == :window_function
+    c.association_reflection(:cs).send(:filter_by_associations_limit_strategy).should == :window_function
   end
 
   it "should ignore Model.default_eager_limit_strategy for one_to_one associations" do
     @c.default_eager_limit_strategy = :window_function
     @c.one_to_one :c, :class=>@c
-    @c.association_reflection(:c).eager_limit_strategy.should be_nil
+    @c.association_reflection(:c).send(:filter_by_associations_limit_strategy).should be_nil
+  end
+end
+
+describe Sequel::Model::Associations::AssociationReflection, "#apply_eager_dataset_changes" do
+  it "should apply the eager block as well as the association options to the dataset" do
+    @c = Class.new(Sequel::Model(:foo))
+    @c.one_to_many :cs, :class=>@c, :select=>:a, :order=>:b do |ds| ds.where(:c) end
+    @c.association_reflection(:cs).apply_eager_dataset_changes(@c.dataset).sql.should == 'SELECT a FROM foo WHERE c ORDER BY b'
   end
 end
 

@@ -384,11 +384,6 @@ describe "Sequel::Plugins::ValidationHelpers" do
     @user.should_not be_valid
     @user.errors.full_messages.should == ['username is already taken']
 
-    ds1 = @c.dataset.filter([[:username, '0records']])
-    ds2 = ds1.exclude(:id=>1)
-    @c.dataset.should_receive(:where).with([[:username, '0records']]).twice.and_return(ds1)
-    ds1.should_receive(:exclude).with(:id=>1).once.and_return(ds2)
-
     @user = @c.load(:id=>1, :username => "0records", :password => "anothertest")
     @user.should be_valid
     DB.sqls.last.should == "SELECT count(*) AS count FROM items WHERE ((username = '0records') AND (id != 1)) LIMIT 1"
@@ -434,11 +429,6 @@ describe "Sequel::Plugins::ValidationHelpers" do
     @user.should_not be_valid
     @user.errors.full_messages.should == ['username and password is already taken']
 
-    ds1 = @c.dataset.filter([[:username, '0records'], [:password, 'anothertest']])
-    ds2 = ds1.exclude(:id=>1)
-    @c.dataset.should_receive(:where).with([[:username, '0records'], [:password, 'anothertest']]).twice.and_return(ds1)
-    ds1.should_receive(:exclude).with(:id=>1).once.and_return(ds2)
-
     @user = @c.load(:id=>1, :username => "0records", :password => "anothertest")
     @user.should be_valid
     DB.sqls.last.should == "SELECT count(*) AS count FROM items WHERE ((username = '0records') AND (password = 'anothertest') AND (id != 1)) LIMIT 1"
@@ -460,7 +450,7 @@ describe "Sequel::Plugins::ValidationHelpers" do
                     "SELECT count(*) AS count FROM items WHERE ((username = '0records') AND active AND (id != 3)) LIMIT 1"]
   end
 
-  it "should support validates_unique with a custom filter" do
+  it "should support validates_unique with :where option" do
     @c.columns(:id, :username, :password)
     @c.set_dataset DB[:items]
     @c.set_validations{validates_unique(:username, :where=>proc{|ds, obj, cols| ds.where(cols.map{|c| [Sequel.function(:lower, c), obj.send(c).downcase]})})}
@@ -471,6 +461,20 @@ describe "Sequel::Plugins::ValidationHelpers" do
     @c.load(:id=>3, :username => "0RECORDS", :password => "anothertest").should be_valid
     DB.sqls.should == ["SELECT count(*) AS count FROM items WHERE (lower(username) = '0records') LIMIT 1",
                     "SELECT count(*) AS count FROM items WHERE ((lower(username) = '0records') AND (id != 3)) LIMIT 1"]
+  end
+
+  it "should support validates_unique with :dataset option" do
+    @c.columns(:id, :username, :password)
+    @c.set_dataset DB[:items]
+    c = @c
+    @c.set_validations{validates_unique(:username, :dataset=>c.where(:a=>[1,2,3]))}
+    @c.dataset._fetch = {:v=>0}
+    
+    DB.reset
+    @c.new(:username => "0records", :password => "anothertest").should be_valid
+    @c.load(:id=>3, :username => "0records", :password => "anothertest").should be_valid
+    DB.sqls.should == ["SELECT count(*) AS count FROM items WHERE ((a IN (1, 2, 3)) AND (username = '0records')) LIMIT 1",
+                    "SELECT count(*) AS count FROM items WHERE ((a IN (1, 2, 3)) AND (username = '0records') AND (id != 3)) LIMIT 1"]
   end
 
   it "should support :only_if_modified option for validates_unique, and not check uniqueness for existing records if values haven't changed" do

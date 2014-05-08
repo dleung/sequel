@@ -75,7 +75,14 @@ describe "Simple Dataset operations" do
   end
 
   specify "should graph correctly" do
-    @ds.graph(:items, {:id=>:id}, :table_alias=>:b).extension(:graph_each).all.should == [{:items=>{:id=>1, :number=>10}, :b=>{:id=>1, :number=>10}}]
+    a =  [{:items=>{:id=>1, :number=>10}, :b=>{:id=>1, :number=>10}}]
+    pr = proc{|t| @ds.graph(t, {:id=>:id}, :table_alias=>:b).extension(:graph_each).all.should == a}
+    pr[:items]
+    pr[:items___foo]
+    pr[Sequel.identifier(:items)]
+    pr[Sequel.identifier('items')]
+    pr[Sequel.as(:items, :foo)]
+    pr[Sequel.as(Sequel.identifier('items'), 'foo')]
   end
 
   specify "should graph correctly with a subselect" do
@@ -117,17 +124,47 @@ describe "Simple Dataset operations" do
   specify "should support iterating over large numbers of records with paged_each" do
     (2..100).each{|i| @ds.insert(:number=>i*10)}
 
-    rows = []
-    @ds.order(:number).paged_each(:rows_per_fetch=>5){|row| rows << row}
-    rows.should == (1..100).map{|i| {:id=>i, :number=>i*10}}
+    [:offset, :filter].each do |strategy|
+      rows = []
+      @ds.order(:number).paged_each(:rows_per_fetch=>5, :strategy=>strategy){|row| rows << row}
+      rows.should == (1..100).map{|i| {:id=>i, :number=>i*10}}
 
-    rows = []
-    @ds.order(:number).paged_each(:rows_per_fetch=>3){|row| rows << row}
-    rows.should == (1..100).map{|i| {:id=>i, :number=>i*10}}
+      rows = []
+      @ds.order(:number).paged_each(:rows_per_fetch=>3, :strategy=>strategy){|row| rows << row}
+      rows.should == (1..100).map{|i| {:id=>i, :number=>i*10}}
+
+      rows = []
+      @ds.order(:number, :id).paged_each(:rows_per_fetch=>5, :strategy=>strategy){|row| rows << row}
+      rows.should == (1..100).map{|i| {:id=>i, :number=>i*10}}
+
+      rows = []
+      @ds.reverse_order(:number).paged_each(:rows_per_fetch=>5, :strategy=>strategy){|row| rows << row}
+      rows.should == (1..100).map{|i| {:id=>i, :number=>i*10}}.reverse
+
+      rows = []
+      @ds.order(Sequel.desc(:number), :id).paged_each(:rows_per_fetch=>5, :strategy=>strategy){|row| rows << row}
+      rows.should == (1..100).map{|i| {:id=>i, :number=>i*10}}.reverse
+    end
 
     rows = []
     @ds.order(:number).limit(50, 25).paged_each(:rows_per_fetch=>3){|row| rows << row}
     rows.should == (26..75).map{|i| {:id=>i, :number=>i*10}}
+
+    rows = []
+    @ds.order(Sequel.*(:number, 2)).paged_each(:rows_per_fetch=>5){|row| rows << row}
+    rows.should == (1..100).map{|i| {:id=>i, :number=>i*10}}
+
+    rows = []
+    @ds.order(Sequel.*(:number, 2)).paged_each(:rows_per_fetch=>5, :strategy=>:filter, :filter_values=>proc{|row, _| [row[:number] * 2]}){|row| rows << row}
+    rows.should == (1..100).map{|i| {:id=>i, :number=>i*10}}
+
+    if DB.adapter_scheme == :jdbc
+      # check retrival with varying fetch sizes
+      array = (1..100).to_a
+      [1, 2, 5, 10, 33, 50, 100, 1000].each do |i|
+        @ds.with_fetch_size(i).select_order_map(:id).should == array
+      end
+    end
   end
 
   specify "should fetch all results correctly" do
@@ -156,6 +193,15 @@ describe "Simple Dataset operations" do
     @ds.order(:id).limit(1, 1).all.should == [{:id=>2, :number=>20}]
     @ds.order(:id).limit(2, 0).all.should == [{:id=>1, :number=>10}, {:id=>2, :number=>20}]
     @ds.order(:id).limit(2, 1).all.should == [{:id=>2, :number=>20}]
+  end
+
+  specify "should fetch correctly with just offset" do
+    @ds.order(:id).offset(0).all.should == [{:id=>1, :number=>10}]
+    @ds.order(:id).offset(1).all.should == []
+    @ds.insert(:number=>20)
+    @ds.order(:id).offset(0).all.should == [{:id=>1, :number=>10}, {:id=>2, :number=>20}]
+    @ds.order(:id).offset(1).all.should == [{:id=>2, :number=>20}]
+    @ds.order(:id).offset(2).all.should == []
   end
 
   specify "should fetch correctly with a limit and offset using seperate methods" do
@@ -193,6 +239,12 @@ describe "Simple Dataset operations" do
   
   specify "should fetch correctly with a limit and offset without an order" do
     @ds.limit(2, 1).all.should == []
+  end
+
+  specify "should be orderable by column number" do
+    @ds.insert(:number=>20)
+    @ds.insert(:number=>10)
+    @ds.order(2, 1).select_map([:id, :number]).should == [[1, 10], [3, 10], [2, 20]]
   end
 
   specify "should fetch correctly with a limit in an IN subselect" do
@@ -260,7 +312,7 @@ describe "Simple dataset operations with nasty table names" do
     @db.quote_identifiers = @qi
   end
 
-  cspecify "should work correctly", :mssql, :oracle, :sqlanywhere do
+  cspecify "should work correctly", :oracle, :sqlanywhere, [:jdbc, :mssql] do
     @db.create_table!(@table) do
       primary_key :id
       Integer :number
@@ -294,6 +346,11 @@ describe Sequel::Dataset do
     @d << {:name => 'abc', :value => 456}
     @d << {:name => 'def', :value => 789}
     @d.count.should == 3
+  end
+
+  specify "should handle functions with identifier names correctly" do
+    @d << {:name => 'abc', :value => 6}
+    @d.get{sum.function(:value)}.should == 6
   end
 
   specify "should handle aggregate methods on limited datasets correctly" do
@@ -728,35 +785,35 @@ if DB.dataset.supports_window_functions?
     end
     
     specify "should give correct results for aggregate window functions" do
-      @ds.select(:id){sum(:over, :args=>amount, :partition=>group_id){}.as(:sum)}.all.should ==
+      @ds.select(:id){sum(:amount).over(:partition=>:group_id).as(:sum)}.all.should ==
         [{:sum=>111, :id=>1}, {:sum=>111, :id=>2}, {:sum=>111, :id=>3}, {:sum=>111000, :id=>4}, {:sum=>111000, :id=>5}, {:sum=>111000, :id=>6}]
-      @ds.select(:id){sum(:over, :args=>amount){}.as(:sum)}.all.should ==
+      @ds.select(:id){sum(:amount).over.as(:sum)}.all.should ==
         [{:sum=>111111, :id=>1}, {:sum=>111111, :id=>2}, {:sum=>111111, :id=>3}, {:sum=>111111, :id=>4}, {:sum=>111111, :id=>5}, {:sum=>111111, :id=>6}]
     end
       
     specify "should give correct results for ranking window functions with orders" do
-      @ds.select(:id){rank(:over, :partition=>group_id, :order=>id){}.as(:rank)}.all.should ==
+      @ds.select(:id){rank{}.over(:partition=>:group_id, :order=>:id).as(:rank)}.all.should ==
         [{:rank=>1, :id=>1}, {:rank=>2, :id=>2}, {:rank=>3, :id=>3}, {:rank=>1, :id=>4}, {:rank=>2, :id=>5}, {:rank=>3, :id=>6}]
-      @ds.select(:id){rank(:over, :order=>id){}.as(:rank)}.all.should ==
+      @ds.select(:id){rank{}.over(:order=>id).as(:rank)}.all.should ==
         [{:rank=>1, :id=>1}, {:rank=>2, :id=>2}, {:rank=>3, :id=>3}, {:rank=>4, :id=>4}, {:rank=>5, :id=>5}, {:rank=>6, :id=>6}]
     end
       
-    cspecify "should give correct results for aggregate window functions with orders", :mssql do
-      @ds.select(:id){sum(:over, :args=>amount, :partition=>group_id, :order=>id){}.as(:sum)}.all.should ==
+    specify "should give correct results for aggregate window functions with orders" do
+      @ds.select(:id){sum(:amount).over(:partition=>:group_id, :order=>:id).as(:sum)}.all.should ==
         [{:sum=>1, :id=>1}, {:sum=>11, :id=>2}, {:sum=>111, :id=>3}, {:sum=>1000, :id=>4}, {:sum=>11000, :id=>5}, {:sum=>111000, :id=>6}]
-      @ds.select(:id){sum(:over, :args=>amount, :order=>id){}.as(:sum)}.all.should ==
+      @ds.select(:id){sum(:amount).over(:order=>:id).as(:sum)}.all.should ==
         [{:sum=>1, :id=>1}, {:sum=>11, :id=>2}, {:sum=>111, :id=>3}, {:sum=>1111, :id=>4}, {:sum=>11111, :id=>5}, {:sum=>111111, :id=>6}]
     end
     
-    cspecify "should give correct results for aggregate window functions with frames", :mssql do
-      @ds.select(:id){sum(:over, :args=>amount, :partition=>group_id, :order=>id, :frame=>:all){}.as(:sum)}.all.should ==
+    specify "should give correct results for aggregate window functions with frames" do
+      @ds.select(:id){sum(:amount).over(:partition=>:group_id, :order=>:id, :frame=>:all).as(:sum)}.all.should ==
         [{:sum=>111, :id=>1}, {:sum=>111, :id=>2}, {:sum=>111, :id=>3}, {:sum=>111000, :id=>4}, {:sum=>111000, :id=>5}, {:sum=>111000, :id=>6}]
-      @ds.select(:id){sum(:over, :args=>amount, :order=>id, :frame=>:all){}.as(:sum)}.all.should ==
+      @ds.select(:id){sum(:amount).over(:order=>:id, :frame=>:all).as(:sum)}.all.should ==
         [{:sum=>111111, :id=>1}, {:sum=>111111, :id=>2}, {:sum=>111111, :id=>3}, {:sum=>111111, :id=>4}, {:sum=>111111, :id=>5}, {:sum=>111111, :id=>6}]
         
-      @ds.select(:id){sum(:over, :args=>amount, :partition=>group_id, :order=>id, :frame=>:rows){}.as(:sum)}.all.should ==
+      @ds.select(:id){sum(:amount).over(:partition=>:group_id, :order=>:id, :frame=>:rows).as(:sum)}.all.should ==
         [{:sum=>1, :id=>1}, {:sum=>11, :id=>2}, {:sum=>111, :id=>3}, {:sum=>1000, :id=>4}, {:sum=>11000, :id=>5}, {:sum=>111000, :id=>6}]
-      @ds.select(:id){sum(:over, :args=>amount, :order=>id, :frame=>:rows){}.as(:sum)}.all.should ==
+      @ds.select(:id){sum(:amount).over(:order=>:id, :frame=>:rows).as(:sum)}.all.should ==
         [{:sum=>1, :id=>1}, {:sum=>11, :id=>2}, {:sum=>111, :id=>3}, {:sum=>1111, :id=>4}, {:sum=>11111, :id=>5}, {:sum=>111111, :id=>6}]
     end
   end
@@ -782,7 +839,7 @@ describe Sequel::SQL::Constants do
     @db.drop_table?(:constants)
   end
   
-  cspecify "should have working CURRENT_DATE", [:odbc, :mssql], [:jdbc, :sqlite], :oracle do
+  cspecify "should have working CURRENT_DATE", [:jdbc, :sqlite], :oracle do
     @db.create_table!(:constants){Date :d}
     @ds.insert(:d=>Sequel::CURRENT_DATE)
     d = @c2[@ds.get(:d)]

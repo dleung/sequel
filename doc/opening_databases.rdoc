@@ -28,7 +28,7 @@ You can use URI query parameters to specify options:
 
 You can also pass an additional option hash with the connection string:
 
-  DB = Sequel.connect('postgres://localhost/blog' :user=>'user', :password=>'password')
+  DB = Sequel.connect('postgres://localhost/blog', :user=>'user', :password=>'password')
 
 You can also just use an options hash without a connection string.  If you do this, you must
 provide the adapter to use:
@@ -283,6 +283,10 @@ The following additional options are supported:
                   Setting to false roughly doubles performance when selecting large numbers of rows.
                   Note that you can't provide this option inside the connection string (as that is passed
                   directly to JDBC), you have to pass it as a separate option.
+:driver :: Specify the Java driver class to use to connect to the database.  This only has
+           an effect if the database type is not recognized from the connection string,
+           and only helps cases where <tt>java.sql.DriverManager.getConnection</tt> does not
+           return a connection.
 :login_timeout :: Set the login timeout on the JDBC connection (in seconds).
 
 === mysql 
@@ -300,6 +304,10 @@ The following additional options are supported:
 :config_default_group :: The default group to read from the in the MySQL config file.
 :config_local_infile :: If provided, sets the Mysql::OPT_LOCAL_INFILE option on the connection with the given value.
 :encoding :: Specify the encoding/character set to use for the connection.
+:fractional_seconds :: On MySQL 5.6.5+, this option is recognized and will include fractional seconds in
+                       time/timestamp values, as well as have the schema method create columns that can contain
+                       fractional seconds by deafult.  This option is also supported on other adapters that connect
+                       to MySQL.
 :socket :: Can be used to specify a Unix socket file to connect to instead of a TCP host and port.
 :sql_mode :: Set the sql_mode(s) for a given connection.  Can be single symbol or string,
              or an array of symbols or strings (e.g. <tt>:sql_mode=>[:no_zero_date, :pipes_as_concat]</tt>).
@@ -440,6 +448,9 @@ options that you may want to set are :login_timeout, :timeout, :tds_version, :az
 
 Other Sequel specific options:
 
+:server_version :: Override the server version to use (9000000 = SQL Server 2005).
+                   This also works on any other adapter that connects to Microsoft
+                   SQL Server.
 :textsize :: Override the default TEXTSIZE setting for this connection.  The FreeTDS
              default is small (around 64000 bytes), but can be set up to around 2GB.
              This should be specified as an integer.  If you plan on setting large

@@ -11,7 +11,7 @@
 <li><a href="rdoc-plugins/classes/Sequel/Plugins/AssociationProxies.html">association_proxies</a>: Changes the *_to_many association method to return a proxy instead of an array of objects.</li>
 <li><a href="rdoc-plugins/classes/Sequel/Plugins/DatasetAssociations.html">dataset_associations</a>: Adds association methods to datasets that return datasets of associated objects.</li>
 <li><a href="rdoc-plugins/classes/Sequel/Plugins/EagerEach.html">eager_each</a>: Makes each on an eagerly loaded dataset do eager loading.</li>
-<li><a href="rdoc-plugins/classes/Sequel/Plugins/ManyThroughMany.html">many_through_many</a>: Allows you to create an association to multiple objects through multiple join tables.</li>
+<li><a href="rdoc-plugins/classes/Sequel/Plugins/ManyThroughMany.html">many_through_many</a>: Allows you to create an association through multiple join tables.</li>
 <li><a href="rdoc-plugins/classes/Sequel/Plugins/NestedAttributes.html">nested_attributes</a>: Allows you to modified associated objects directly through a model object, similar to ActiveRecord's Nested Attributes.</li>
 <li><a href="rdoc-plugins/classes/Sequel/Plugins/PgArrayAssociations.html">pg_array_associations</a>: Adds associations types to handle the case where foreign keys are stored in a PostgreSQL array in one of the tables.</li>
 <li><a href="rdoc-plugins/classes/Sequel/Plugins/RcteTree.html">rcte_tree</a>: Supports retrieving all ancestors and descendants for tree structured data using recursive common table expressions.</li>
@@ -49,12 +49,14 @@
 </ul></li>
 <li>Saving:<ul>
 <li><a href="rdoc-plugins/classes/Sequel/Plugins/InstanceFilters.html">instance_filters</a>: Allows you to add per instance filters that are used when updating or destroying the instance.</li>
+<li><a href="rdoc-plugins/classes/Sequel/Plugins/MssqlOptimisticLocking.html">mssql_optimistic_locking</a>: Uses a timestamp/rowversion column on Microsoft SQL Server to prevent concurrent updates overwriting changes.</li>
 <li><a href="rdoc-plugins/classes/Sequel/Plugins/OptimisticLocking.html">optimistic_locking</a>: Adds a database-independent locking mechanism to models to prevent concurrent updates overwriting changes.</li>
 <li><a href="rdoc-plugins/classes/Sequel/Plugins/Sharding.html">sharding</a>: Additional model support for Sequel's sharding support.</li>
 <li><a href="rdoc-plugins/classes/Sequel/Plugins/SkipCreateRefresh.html">skip_create_refresh</a>: Allows you to skip the refresh when saving new model objects.</li>
 <li><a href='rdoc-plugins/classes/Sequel/Plugins/Timestamps.html'>timestamps</a>: Creates hooks for automatically setting create and update timestamps.</li>
 <li><a href='rdoc-plugins/classes/Sequel/Plugins/Touch.html'>touch</a>: Allows easily updating timestamps via Model#touch, as well as touching associations when model instances are updated or destroyed.</li>
 <li><a href="rdoc-plugins/classes/Sequel/Plugins/UnlimitedUpdate.html">unlimited_update</a>: Works around MySQL warnings when using replication due to LIMIT clause use when updating model instances.</li>
+<li><a href="rdoc-plugins/classes/Sequel/Plugins/UpdateOrCreate.html">update_or_create</a>: Adds helper methods for updating an object if it exists, or creating such an object if it does not.</li>
 <li><a href="rdoc-plugins/classes/Sequel/Plugins/UpdatePrimaryKey.html">update_primary_key</a>: Allows you to safely update the primary key of a model object.</li>
 </ul></li>
 <li>Serialization:<ul>
@@ -141,6 +143,7 @@
 
 <ul>
 <li><a href="rdoc-plugins/files/lib/sequel/extensions/columns_introspection_rb.html">columns_introspection</a>: Attemps to skip database queries by introspecting the selected columns if possible.</li>
+<li><a href="rdoc-plugins/files/lib/sequel/extensions/current_datetime_timestamp_rb.html">current_datetime_timestamp</a>: Creates current Time/DateTime objects that are literalized as CURRENT_TIMESTAMP.</li>
 <li><a href="rdoc-plugins/files/lib/sequel/extensions/date_arithmetic_rb.html">date_arithmetic</a>: Allows for database-independent date calculations (adding/subtracting an interval to/from a date/timestamp).</li>
 <li><a href="rdoc-plugins/files/lib/sequel/extensions/empty_array_ignore_nulls_rb.html">empty_array_ignore_nulls</a>: Makes Sequel's handling of IN/NOT IN with an empty ignore correct NULL handling.</li>
 <li><a href="rdoc-plugins/files/lib/sequel/extensions/filter_having_rb.html">filter_having</a>: Makes Dataset#filter, #and, #or, and #having operate on HAVING clause if HAVING clause is already present.</li>
@@ -171,7 +174,7 @@
 <li><a href="rdoc-plugins/files/lib/sequel/extensions/inflector_rb.html">inflector</a>: Adds instance-level inflection methods to String.</li>
 <li><a href="rdoc-plugins/files/lib/sequel/extensions/meta_def_rb.html">meta_def</a>: Adds meta_def method for defining methods to Database, Dataset, and Model classes and instances.</li>
 <li><a href="rdoc-plugins/files/lib/sequel/extensions/migration_rb.html">migration</a>: Adds Migration and Migrator classes for easily migrating the database schema forward or reverting to a previous version.</li>
-<li><a href="rdoc-plugins/files/lib/sequel/extensions/named_timezones_rb.html">named_timezones</a>: Allows you to use named timezones instead of just :local and :utc (requires <a href="http://tzinfo.rubyforge.org/">TZInfo</a>).</li>
+<li><a href="rdoc-plugins/files/lib/sequel/extensions/named_timezones_rb.html">named_timezones</a>: Allows you to use named timezones instead of just :local and :utc (requires <a href="http://tzinfo.github.io/">TZInfo</a>).</li>
 <li><a href="rdoc-plugins/files/lib/sequel/extensions/pg_array_ops_rb.html">pg_array_ops</a>: Adds DSL support for calling PostgreSQL array operators and functions.</li>
 <li><a href="rdoc-plugins/files/lib/sequel/extensions/pg_hstore_ops_rb.html">pg_hstore_ops</a>: Adds DSL support for calling PostgreSQL hstore operators and functions.</li>
 <li><a href="rdoc-plugins/files/lib/sequel/extensions/pg_json_ops_rb.html">pg_json_ops</a>: Adds DSL support for calling PostgreSQL json operators and functions.</li>
@@ -186,6 +189,7 @@
 <h3>External Extensions</h3>
 
 <ul>
+<li><a href='http://github.com/kennym/annotate-sequel'>annotate-sequel</a>: Generates model annotations for Sequel models.</li>
 <li><a href='http://github.com/jeremyevans/fixture_dependencies'>fixture_dependencies</a>: YAML fixture loader that handles dependencies/associated objects, respecting foreign key constraints.</li>
 <li><a href='http://github.com/gucki/i18n_backend_sequel'>i18n_backend_sequel</a>: Allows Sequel to be a backend for i18n translations.</li>
 <li><a href='http://github.com/pk/merb_sequel'>merb_sequel</a>: Merb plugin that provides support for Sequel models.</li>

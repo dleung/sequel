@@ -18,6 +18,7 @@ could conceivably be abused to do so:
 
 * Sequel::Schema::CreateTableGenerator.add_type_method
 * Sequel::Dataset.def_mutation_method
+* Sequel::Dataset.def_sql_method
 * Sequel::Model::Plugins.def_dataset_methods
 * Sequel.def_adapter_method (private)
 * Sequel::SQL::Expression.to_s_method (private)
@@ -126,7 +127,7 @@ Note that for that type of query, Sequel generally encourages the following form
   DB[:table].where{|o| o.name > params[:id].to_s} # Safe
 
 Sequel's DSL supports a wide variety of SQL concepts, so it's possible to
-code most applications without every using raw SQL.
+code most applications without ever using raw SQL.
 
 A large number of dataset methods ultimately pass down their arguments to a filter
 method, even some you may not expect, so you should be careful.  At least the
@@ -167,6 +168,18 @@ Instead, you should do:
 
 The Sequel::Dataset#lock_style method also treats an input string 
 as SQL code. This method should not be called with user input.
+
+==== SQL Type Names
+
+In general, most places where Sequel needs to use an SQL type that should
+be specified by the user, it allows you to use a ruby string, and that
+string is used verbatim as the SQL type.  You should not use user input
+for type strings.
+
+==== SQL Function Names
+
+In most cases, Sequel does not quote SQL function names.  You should not use
+user input for function names.
 
 === SQL Identifier Injections
 

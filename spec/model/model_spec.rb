@@ -303,7 +303,7 @@ describe Sequel::Model, "constructors" do
     block_called = false
     m = @m.new {|i| block_called = true; i.should be_a_kind_of(@m); i.values[:a] = 1}
     
-    block_called.should be_true
+    block_called.should == true
     m.values[:a].should == 1
   end
   
@@ -312,21 +312,21 @@ describe Sequel::Model, "constructors" do
     o = @m.dataset.row_proc.call(:a=>1)
     o.should be_a_kind_of(@m)
     o.values.should == {:a=>1}
-    o.new?.should be_false
+    o.new?.should == false
   end
   
   it "should have .call create an existing object" do
     o = @m.call(:a=>1)
     o.should be_a_kind_of(@m)
     o.values.should == {:a=>1}
-    o.new?.should be_false
+    o.new?.should == false
   end
   
   it "should have .load create an existing object" do
     o = @m.load(:a=>1)
     o.should be_a_kind_of(@m)
     o.values.should == {:a=>1}
-    o.new?.should be_false
+    o.new?.should == false
   end
 end
 
@@ -418,6 +418,231 @@ describe Sequel::Model, ".find" do
   end
 end
 
+describe Sequel::Model, ".finder" do
+  before do
+    @h = {:id=>1}
+    @db = Sequel.mock(:fetch=>@h)
+    @c = Class.new(Sequel::Model(@db[:items]))
+    @c.instance_eval do
+      def foo(a, b)
+        where(:bar=>a).order(b)
+      end
+    end
+    @o = @c.load(@h)
+    @db.sqls
+  end
+
+  specify "should create a method that calls the method given and returns the first instance" do
+    @c.finder :foo
+    @c.first_foo(1, 2).should == @o
+    @c.first_foo(3, 4).should == @o
+    @db.sqls.should == ["SELECT * FROM items WHERE (bar = 1) ORDER BY 2 LIMIT 1", "SELECT * FROM items WHERE (bar = 3) ORDER BY 4 LIMIT 1"]
+  end
+
+  specify "should work correctly when subclassing" do
+    @c.finder(:foo)
+    @sc = Class.new(@c)
+    @sc.set_dataset :foos
+    @db.sqls
+    @sc.first_foo(1, 2).should == @sc.load(@h)
+    @sc.first_foo(3, 4).should == @sc.load(@h)
+    @db.sqls.should == ["SELECT * FROM foos WHERE (bar = 1) ORDER BY 2 LIMIT 1", "SELECT * FROM foos WHERE (bar = 3) ORDER BY 4 LIMIT 1"]
+  end
+
+  specify "should work correctly when dataset is modified" do
+    @c.finder(:foo)
+    @c.first_foo(1, 2).should == @o
+    @c.set_dataset :foos
+    @c.first_foo(3, 4).should == @o
+    @db.sqls.should == ["SELECT * FROM items WHERE (bar = 1) ORDER BY 2 LIMIT 1", "SELECT * FROM foos LIMIT 1", "SELECT * FROM foos WHERE (bar = 3) ORDER BY 4 LIMIT 1"]
+  end
+
+  specify "should create a method based on the given block if no method symbol provided" do
+    @c.finder(:name=>:first_foo){|pl, ds| ds.where(pl.arg).limit(1)}
+    @c.first_foo(:id=>1).should == @o
+    @db.sqls.should == ["SELECT * FROM items WHERE (id = 1) LIMIT 1"]
+  end
+
+  specify "should raise an error if both a block and method symbol given" do
+    proc{@c.finder(:foo, :name=>:first_foo){|pl, ds| ds.where(pl.arg)}}.should raise_error(Sequel::Error)
+  end
+
+  specify "should raise an error if two option hashes are provided" do
+    proc{@c.finder({:name2=>:foo}, :name=>:first_foo){|pl, ds| ds.where(pl.arg)}}.should raise_error(Sequel::Error)
+  end
+
+  specify "should support :type option" do
+    @c.finder :foo, :type=>:all
+    @c.finder :foo, :type=>:each
+    @c.finder :foo, :type=>:get
+
+    a = []
+    @c.all_foo(1, 2){|r| a << r}.should == [@o]
+    a.should == [@o]
+   
+    a = []
+    @c.each_foo(3, 4){|r| a << r}
+    a.should == [@o]
+
+    @c.get_foo(5, 6).should == [:id, 1]
+
+    @db.sqls.should == ["SELECT * FROM items WHERE (bar = 1) ORDER BY 2", "SELECT * FROM items WHERE (bar = 3) ORDER BY 4", "SELECT * FROM items WHERE (bar = 5) ORDER BY 6 LIMIT 1"]
+  end
+
+  specify "should support :name option" do
+    @c.finder :foo, :name=>:find_foo
+    @c.find_foo(1, 2).should == @o
+    @c.find_foo(3, 4).should == @o
+    @db.sqls.should == ["SELECT * FROM items WHERE (bar = 1) ORDER BY 2 LIMIT 1", "SELECT * FROM items WHERE (bar = 3) ORDER BY 4 LIMIT 1"]
+  end
+
+  specify "should support :arity option" do
+    def @c.foobar(*b)
+      ds = dataset
+      b.each_with_index do |a, i|
+        ds = ds.where(i=>a)
+      end
+      ds
+    end
+    @c.finder :foobar, :arity=>1, :name=>:find_foobar_1
+    @c.finder :foobar, :arity=>2, :name=>:find_foobar_2
+    @c.find_foobar_1(:a)
+    @c.find_foobar_2(:a, :b)
+    @db.sqls.should == ["SELECT * FROM items WHERE (0 = a) LIMIT 1", "SELECT * FROM items WHERE ((0 = a) AND (1 = b)) LIMIT 1"]
+  end
+
+  specify "should support :mod option" do
+    m = Module.new
+    @c.finder :foo, :mod=>m
+    proc{@c.first_foo}.should raise_error
+    @c.extend m
+    @c.first_foo(1, 2).should == @o
+    @c.first_foo(3, 4).should == @o
+    @db.sqls.should == ["SELECT * FROM items WHERE (bar = 1) ORDER BY 2 LIMIT 1", "SELECT * FROM items WHERE (bar = 3) ORDER BY 4 LIMIT 1"]
+  end
+
+  specify "should raise error when calling with the wrong arity" do
+    @c.finder :foo
+    proc{@c.first_foo(1)}.should raise_error
+    proc{@c.first_foo(1,2,3)}.should raise_error
+  end
+end
+
+describe Sequel::Model, ".prepared_finder" do
+  before do
+    @h = {:id=>1}
+    @db = Sequel.mock(:fetch=>@h)
+    @db.extend_datasets do
+      def select_sql
+        sql = super
+        sql << ' -- prepared' if is_a?(Sequel::Dataset::PreparedStatementMethods)
+        sql
+      end
+    end
+    @c = Class.new(Sequel::Model(@db[:items]))
+    @c.instance_eval do
+      def foo(a, b)
+        where(:bar=>a).order(b)
+      end
+    end
+    @o = @c.load(@h)
+    @db.sqls
+  end
+
+  specify "should create a method that calls the method given and returns the first instance" do
+    @c.prepared_finder :foo
+    @c.first_foo(1, 2).should == @o
+    @c.first_foo(3, 4).should == @o
+    @db.sqls.should == ["SELECT * FROM items WHERE (bar = 1) ORDER BY 2 LIMIT 1 -- prepared", "SELECT * FROM items WHERE (bar = 3) ORDER BY 4 LIMIT 1 -- prepared"]
+  end
+
+  specify "should work correctly when subclassing" do
+    @c.prepared_finder(:foo)
+    @sc = Class.new(@c)
+    @sc.set_dataset :foos
+    @db.sqls
+    @sc.first_foo(1, 2).should == @sc.load(@h)
+    @sc.first_foo(3, 4).should == @sc.load(@h)
+    @db.sqls.should == ["SELECT * FROM foos WHERE (bar = 1) ORDER BY 2 LIMIT 1 -- prepared", "SELECT * FROM foos WHERE (bar = 3) ORDER BY 4 LIMIT 1 -- prepared"]
+  end
+
+  specify "should work correctly when dataset is modified" do
+    @c.prepared_finder(:foo)
+    @c.first_foo(1, 2).should == @o
+    @c.set_dataset :foos
+    @c.first_foo(3, 4).should == @o
+    @db.sqls.should == ["SELECT * FROM items WHERE (bar = 1) ORDER BY 2 LIMIT 1 -- prepared", "SELECT * FROM foos LIMIT 1", "SELECT * FROM foos WHERE (bar = 3) ORDER BY 4 LIMIT 1 -- prepared"]
+  end
+
+  specify "should create a method based on the given block if no method symbol provided" do
+    @c.prepared_finder(:name=>:first_foo){|a1| where(:id=>a1).limit(1)}
+    @c.first_foo(1).should == @o
+    @db.sqls.should == ["SELECT * FROM items WHERE (id = 1) LIMIT 1 -- prepared"]
+  end
+
+  specify "should raise an error if both a block and method symbol given" do
+    proc{@c.prepared_finder(:foo, :name=>:first_foo){|pl, ds| ds.where(pl.arg)}}.should raise_error(Sequel::Error)
+  end
+
+  specify "should raise an error if two option hashes are provided" do
+    proc{@c.prepared_finder({:name2=>:foo}, :name=>:first_foo){|pl, ds| ds.where(pl.arg)}}.should raise_error(Sequel::Error)
+  end
+
+  specify "should support :type option" do
+    @c.prepared_finder :foo, :type=>:all
+    @c.prepared_finder :foo, :type=>:each
+
+    a = []
+    @c.all_foo(1, 2){|r| a << r}.should == [@o]
+    a.should == [@o]
+   
+    a = []
+    @c.each_foo(3, 4){|r| a << r}
+    a.should == [@o]
+
+    @db.sqls.should == ["SELECT * FROM items WHERE (bar = 1) ORDER BY 2 -- prepared", "SELECT * FROM items WHERE (bar = 3) ORDER BY 4 -- prepared"]
+  end
+
+  specify "should support :name option" do
+    @c.prepared_finder :foo, :name=>:find_foo
+    @c.find_foo(1, 2).should == @o
+    @c.find_foo(3, 4).should == @o
+    @db.sqls.should == ["SELECT * FROM items WHERE (bar = 1) ORDER BY 2 LIMIT 1 -- prepared", "SELECT * FROM items WHERE (bar = 3) ORDER BY 4 LIMIT 1 -- prepared"]
+  end
+
+  specify "should support :arity option" do
+    def @c.foobar(*b)
+      ds = dataset
+      b.each_with_index do |a, i|
+        ds = ds.where(i=>a)
+      end
+      ds
+    end
+    @c.prepared_finder :foobar, :arity=>1, :name=>:find_foobar_1
+    @c.prepared_finder :foobar, :arity=>2, :name=>:find_foobar_2
+    @c.find_foobar_1(:a)
+    @c.find_foobar_2(:a, :b)
+    @db.sqls.should == ["SELECT * FROM items WHERE (0 = a) LIMIT 1 -- prepared", "SELECT * FROM items WHERE ((0 = a) AND (1 = b)) LIMIT 1 -- prepared"]
+  end
+
+  specify "should support :mod option" do
+    m = Module.new
+    @c.prepared_finder :foo, :mod=>m
+    proc{@c.first_foo}.should raise_error
+    @c.extend m
+    @c.first_foo(1, 2).should == @o
+    @c.first_foo(3, 4).should == @o
+    @db.sqls.should == ["SELECT * FROM items WHERE (bar = 1) ORDER BY 2 LIMIT 1 -- prepared", "SELECT * FROM items WHERE (bar = 3) ORDER BY 4 LIMIT 1 -- prepared"]
+  end
+
+  specify "should handle models with names" do
+    def @c.name; 'foobar' end
+    @c.prepared_finder :foo
+    @c.first_foo(1, 2).should == @o
+    @db.sqls.should == ["SELECT * FROM items WHERE (bar = 1) ORDER BY 2 LIMIT 1 -- prepared"]
+  end
+end
+
 describe Sequel::Model, ".fetch" do
   before do
     DB.reset
@@ -437,32 +662,35 @@ end
 
 describe Sequel::Model, ".find_or_create" do
   before do
-    @c = Class.new(Sequel::Model(:items)) do
+    @db = Sequel.mock
+    @c = Class.new(Sequel::Model(@db[:items])) do
       set_primary_key :id
       columns :x
     end
-    DB.reset
+    @db.sqls
   end
 
   it "should find the record" do
+    @db.fetch = [{:x=>1, :id=>1}]
+    @db.autoid = 1
     @c.find_or_create(:x => 1).should == @c.load(:x=>1, :id=>1)
-    DB.sqls.should == ["SELECT * FROM items WHERE (x = 1) LIMIT 1"]
+    @db.sqls.should == ["SELECT * FROM items WHERE (x = 1) LIMIT 1"]
   end
   
   it "should create the record if not found" do
-    @c.instance_dataset._fetch = @c.dataset._fetch = [[], {:x=>1, :id=>1}]
-    @c.instance_dataset.autoid = @c.dataset.autoid = 1
+    @db.fetch = [[], {:x=>1, :id=>1}]
+    @db.autoid = 1
     @c.find_or_create(:x => 1).should == @c.load(:x=>1, :id=>1)
-    DB.sqls.should == ["SELECT * FROM items WHERE (x = 1) LIMIT 1",
+    @db.sqls.should == ["SELECT * FROM items WHERE (x = 1) LIMIT 1",
       "INSERT INTO items (x) VALUES (1)",
       "SELECT * FROM items WHERE (id = 1) LIMIT 1"]
   end
 
   it "should pass the new record to be created to the block if no record is found" do
-    @c.instance_dataset._fetch = @c.dataset._fetch = [[], {:x=>1, :id=>1}]
-    @c.instance_dataset.autoid = @c.dataset.autoid = 1
+    @db.fetch = [[], {:x=>1, :id=>1}]
+    @db.autoid = 1
     @c.find_or_create(:x => 1){|x| x[:y] = 2}.should == @c.load(:x=>1, :id=>1)
-    sqls = DB.sqls
+    sqls = @db.sqls
     sqls.first.should == "SELECT * FROM items WHERE (x = 1) LIMIT 1"
     ["INSERT INTO items (x, y) VALUES (1, 2)", "INSERT INTO items (y, x) VALUES (2, 1)"].should include(sqls[1])
     sqls.last.should == "SELECT * FROM items WHERE (id = 1) LIMIT 1"
@@ -685,6 +913,15 @@ describe "Model.db_schema" do
     @c.dataset = ds
     @c.db_schema.should == {:x=>{:primary_key=>true}, :y=>{:primary_key=>true}}
     @c.primary_key.should == [:x, :y]
+  end
+
+  specify "should set an immutable composite primary key based on the schema" do
+    ds = @dataset
+    d = ds.db
+    def d.schema(table, *opts) [[:x, {:primary_key=>true}], [:y, {:primary_key=>true}]] end
+    @c.dataset = ds
+    @c.primary_key.should == [:x, :y]
+    proc{@c.primary_key.pop}.should raise_error
   end
   
   specify "should automatically set no primary key based on the schema" do

@@ -78,6 +78,9 @@
 # types as model column values you probably should use the
 # pg_typecast_on_load plugin if the column values are returned as a string.
 #
+# See the {schema modification guide}[rdoc-ref:doc/schema_modification.rdoc]
+# for details on using row type columns in CREATE/ALTER TABLE statements.
+#
 # This extension requires both the strscan and delegate libraries.
 
 require 'delegate'
@@ -496,6 +499,7 @@ module Sequel
             private meth
           end
 
+          conversion_procs_updated
           nil
         end
 

@@ -165,6 +165,12 @@ module Sequel
         @opts[:bind_vars].has_key?(k)
       end
 
+      # The symbol cache should always be skipped, since placeholders
+      # are symbols.
+      def skip_symbol_cache?
+        true
+      end
+
       # Use a clone of the dataset extended with prepared statement
       # support and using the same argument hash so that you can use
       # bind variables/prepared arguments in subselects.

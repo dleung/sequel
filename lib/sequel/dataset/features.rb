@@ -44,7 +44,7 @@ module Sequel
     # If given, +type+ can be :select, :insert, :update, or :delete, in which case it
     # determines whether WITH is supported for the respective statement type.
     def supports_cte?(type=:select)
-      send(:"#{type}_clause_methods").include?(:"#{type}_with_sql")
+      false
     end
 
     # Whether the dataset supports common table expressions (the WITH clause)
@@ -99,6 +99,11 @@ module Sequel
     def supports_lateral_subqueries?
       false
     end
+
+    # Whether limits are supported in correlated subqueries.  True by default.
+    def supports_limits_in_correlated_subqueries?
+      true
+    end
     
     # Whether modifying joined datasets is supported.
     def supports_modifying_joins?
@@ -108,6 +113,11 @@ module Sequel
     # Whether the IN/NOT IN operators support multiple columns when an
     # array of values is given.
     def supports_multiple_column_in?
+      true
+    end
+
+    # Whether offsets are supported in correlated subqueries, true by default.
+    def supports_offsets_in_correlated_subqueries?
       true
     end
 
@@ -130,7 +140,7 @@ module Sequel
     # Whether the RETURNING clause is supported for the given type of query.
     # +type+ can be :insert, :update, or :delete.
     def supports_returning?(type)
-      send(:"#{type}_clause_methods").include?(:"#{type}_returning_sql")
+      false
     end
 
     # Whether the database supports SELECT *, column FROM table
@@ -165,6 +175,11 @@ module Sequel
     # using at least one value, false by default.
     def insert_supports_empty_values?
       true
+    end
+
+    # Whether the database supports quoting function names, false by default.
+    def supports_quoted_function_names?
+      false
     end
 
     # Whether the RETURNING clause is used for the given dataset.
